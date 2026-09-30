@@ -1,0 +1,15 @@
+# Virtual Environment & Caches (100% on D:)
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# OS files
+Thumbs.db
+.DS_Store

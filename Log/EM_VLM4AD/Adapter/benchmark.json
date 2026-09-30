@@ -1,0 +1,15 @@
+{
+  "e2e_mean_ms": 211.231042,
+  "e2e_p50_ms": 67.624672,
+  "e2e_p95_ms": 884.651245,
+  "generation_mean_ms": 210.768115,
+  "generation_p50_ms": 67.168635,
+  "generation_p95_ms": 884.06582,
+  "average_generation_ms_per_output_token": 10.506885,
+  "tokens_per_second": 95.175686,
+  "device": "cuda",
+  "python": "3.12.13",
+  "torch": "2.10.0+cu128",
+  "gpu": "Tesla T4",
+  "peak_cuda_memory": 775301120
+}
