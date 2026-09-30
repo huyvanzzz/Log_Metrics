@@ -9,11 +9,12 @@ echo [2/2] Khoi dong Frontend Vite (Port 5173)...
 start "AD Visualizer Frontend" cmd /k "cd /d d:\AD\Visualize\frontend && npm run dev"
 
 echo.
-echo Dang mo trinh duyet toi http://localhost:5173 ...
+echo Dang mo trinh duyet toi http://127.0.0.1:5173 ...
 timeout /t 3 /nobreak >nul
-start http://localhost:5173
+start http://127.0.0.1:5173
 
 echo.
 echo Dashboard da duoc khoi chay thanh cong!
-echo Nhan phim bat ky de thoat cua so nay (Backend va Frontend van chay ngam).
+echo Luu y: Giu 2 cua so Backend va Frontend mo de dashboard hoat dong.
+echo Nhan phim bat ky de dong cua so trinh khoi chay nay.
 pause

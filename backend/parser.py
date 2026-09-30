@@ -21,10 +21,10 @@ def calculate_overall(metrics: Dict[str, Any]) -> float:
     Tính điểm Overall theo công thức bắt buộc:
     Overall = (BLEU4 + METEOR + ROUGE_L + CIDEr / 10) / 4
     """
-    bleu4 = float(metrics.get("BLEU-4", 0.0))
-    meteor = float(metrics.get("METEOR", 0.0))
-    rouge_l = float(metrics.get("ROUGE-L", 0.0))
-    cider = float(metrics.get("CIDEr", 0.0))
+    bleu4 = float(metrics.get("BLEU-4") or 0.0)
+    meteor = float(metrics.get("METEOR") or 0.0)
+    rouge_l = float(metrics.get("ROUGE-L") or 0.0)
+    cider = float(metrics.get("CIDEr") or 0.0)
     overall = (bleu4 + meteor + rouge_l + (cider / 10.0)) / 4.0
     return round(overall, 4)
 
@@ -170,6 +170,7 @@ def get_model_metrics(model_dir: Path) -> Optional[Dict[str, Any]]:
     """
     Đọc metrics_display.json (hoặc metrics.json) và tính toán Overall score.
     Tự động chuẩn hóa về thang điểm 100 nếu dữ liệu gốc ở dạng tỷ lệ 0..1.
+    Tự động chuẩn hóa CIDEr nếu nhập ở thang điểm 0..15 (ví dụ 3.20 -> 320.0).
     """
     path = model_dir / "metrics_display.json"
     if not path.exists():
@@ -180,18 +181,28 @@ def get_model_metrics(model_dir: Path) -> Optional[Dict[str, Any]]:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
 
-        # Nếu BLEU-1 <= 1.0, tự động nhân 100 để đưa về cùng thang đo chuẩn
-        raw_b1 = float(raw.get("BLEU-1", 0.0))
-        factor = 100.0 if 0 < raw_b1 <= 1.0 else 1.0
+        raw_b1 = float(raw["BLEU-1"]) if "BLEU-1" in raw and raw["BLEU-1"] is not None else None
+        raw_b4 = float(raw["BLEU-4"]) if "BLEU-4" in raw and raw["BLEU-4"] is not None else None
+
+        # Nếu BLEU <= 1.0, tự động nhân 100 để đưa về cùng thang đo chuẩn
+        factor = 100.0 if ((raw_b1 and 0 < raw_b1 <= 1.0) or (raw_b4 and 0 < raw_b4 <= 1.0)) else 1.0
+
+        def parse_metric(key: str) -> Optional[float]:
+            if key not in raw or raw[key] is None:
+                return None
+            val = float(raw[key]) * factor
+            if key == "CIDEr" and val < 15.0:
+                val = val * 100.0
+            return round(val, 3)
 
         normalized = {
-            "BLEU-1": round(float(raw.get("BLEU-1", 0.0)) * factor, 3),
-            "BLEU-2": round(float(raw.get("BLEU-2", 0.0)) * factor, 3),
-            "BLEU-3": round(float(raw.get("BLEU-3", 0.0)) * factor, 3),
-            "BLEU-4": round(float(raw.get("BLEU-4", 0.0)) * factor, 3),
-            "METEOR": round(float(raw.get("METEOR", 0.0)) * factor, 3),
-            "ROUGE-L": round(float(raw.get("ROUGE-L", 0.0)) * factor, 3),
-            "CIDEr": round(float(raw.get("CIDEr", 0.0)) * factor, 3),
+            "BLEU-1": parse_metric("BLEU-1"),
+            "BLEU-2": parse_metric("BLEU-2"),
+            "BLEU-3": parse_metric("BLEU-3"),
+            "BLEU-4": parse_metric("BLEU-4"),
+            "METEOR": parse_metric("METEOR"),
+            "ROUGE-L": parse_metric("ROUGE-L"),
+            "CIDEr": parse_metric("CIDEr"),
         }
         overall = calculate_overall(normalized)
         normalized["Overall"] = overall

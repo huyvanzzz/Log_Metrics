@@ -103,6 +103,13 @@ export default function App() {
     return [...metricsData].sort((a, b) => (b.Overall || 0) - (a.Overall || 0))[0];
   }, [metricsData]);
 
+  const fastestModel = React.useMemo(() => {
+    if (!benchmarkData.length) return null;
+    const valid = benchmarkData.filter(b => b.has_benchmark && b.data && b.data.average_generation_ms_per_output_token);
+    if (!valid.length) return null;
+    return [...valid].sort((a, b) => a.data.average_generation_ms_per_output_token - b.data.average_generation_ms_per_output_token)[0];
+  }, [benchmarkData]);
+
   return (
     <div className={`min-h-screen ${currentTheme.appBg} transition-colors duration-200 flex flex-col antialiased font-sans`}>
       {/* Header */}
@@ -141,7 +148,7 @@ export default function App() {
                 Tốc Độ Nhanh Nhất
               </div>
               <div className={`text-sm font-extrabold ${currentTheme.textPrimary} mt-0.5`}>
-                10.51 ms/token (Adapter)
+                {fastestModel ? `${fastestModel.data.average_generation_ms_per_output_token.toFixed(2)} ms/token (${fastestModel.model_id})` : 'Chưa có benchmark'}
               </div>
             </div>
           </div>

@@ -6,6 +6,30 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
   const t = currentTheme || THEMES.light;
   const isLight = t.id === 'light' || t.id === 'paper';
 
+  const [sortConfig, setSortConfig] = React.useState({ key: 'Overall', direction: 'desc' });
+
+  const handleSort = (key) => {
+    setSortConfig(prev => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      return { key, direction: 'desc' };
+    });
+  };
+
+  const sortedMetrics = React.useMemo(() => {
+    if (!metrics.length) return [];
+    return [...metrics].sort((a, b) => {
+      const valA = a[sortConfig.key] ?? -999999;
+      const valB = b[sortConfig.key] ?? -999999;
+      if (sortConfig.direction === 'asc') {
+        return valA > valB ? 1 : -1;
+      } else {
+        return valA < valB ? 1 : -1;
+      }
+    });
+  }, [metrics, sortConfig]);
+
   const bestScores = React.useMemo(() => {
     if (!metrics.length) return {};
     const keys = ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'METEOR', 'ROUGE-L', 'CIDEr', 'Overall'];
@@ -30,7 +54,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
               So Sánh Điểm Số NLP
             </h3>
             <p className={`text-xs ${t.textMuted}`}>
-              Đối đầu tất cả mô hình • Highlight điểm cao nhất (Best Score)
+              Đối đầu tất cả mô hình • Sắp xếp mặc định theo điểm Overall (Cao ➔ Thấp)
             </p>
           </div>
         </div>
@@ -46,22 +70,43 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className={`${t.tableHeaderBg} border-b ${t.tableHeaderBorder} ${t.textMuted} uppercase text-[11px] font-semibold tracking-wider`}>
+            <tr className={`${t.tableHeaderBg} border-b ${t.tableHeaderBorder} ${t.textMuted} uppercase text-[11px] font-semibold tracking-wider select-none`}>
               <th className="py-2.5 px-3">Mô hình</th>
-              <th className="py-2.5 px-3 text-right">BLEU-1</th>
-              <th className="py-2.5 px-3 text-right">BLEU-2</th>
-              <th className="py-2.5 px-3 text-right">BLEU-3</th>
-              <th className="py-2.5 px-3 text-right">BLEU-4</th>
-              <th className="py-2.5 px-3 text-right">METEOR</th>
-              <th className="py-2.5 px-3 text-right">ROUGE-L</th>
-              <th className="py-2.5 px-3 text-right">CIDEr</th>
-              <th className="py-2.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10">
-                ⭐ Overall
+              {['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'METEOR', 'ROUGE-L', 'CIDEr'].map((col) => (
+                <th
+                  key={col}
+                  onClick={() => handleSort(col)}
+                  className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+                  title={`Sắp xếp theo ${col}`}
+                >
+                  <div className="inline-flex items-center gap-1 justify-end">
+                    <span>{col}</span>
+                    {sortConfig.key === col && (
+                      <span className="text-[10px] text-emerald-500 font-bold">
+                        {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+              ))}
+              <th
+                onClick={() => handleSort('Overall')}
+                className="py-2.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 cursor-pointer hover:bg-emerald-500/20 transition"
+                title="Sắp xếp theo Overall"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>⭐ Overall</span>
+                  {sortConfig.key === 'Overall' && (
+                    <span className="text-[10px] font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
               </th>
             </tr>
           </thead>
           <tbody className={`divide-y ${t.tableBorder}`}>
-            {metrics.map((row) => {
+            {sortedMetrics.map((row) => {
               const isSelected = activeModelId === row.model_id;
               return (
                 <tr
@@ -79,7 +124,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
                   </td>
                   {['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'METEOR', 'ROUGE-L', 'CIDEr'].map((col) => {
                     const val = row[col];
-                    const isBest = val !== undefined && val === bestScores[col];
+                    const isBest = val !== undefined && val !== null && val > 0 && val === bestScores[col];
                     return (
                       <td key={col} className={`py-2.5 px-3 text-right font-mono ${t.textSecondary}`}>
                         <span
@@ -89,7 +134,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
                               : ''
                           }`}
                         >
-                          {val !== undefined ? val.toFixed(2) : '-'}
+                          {val !== undefined && val !== null ? val.toFixed(2) : '-'}
                         </span>
                       </td>
                     );

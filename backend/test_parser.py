@@ -37,15 +37,16 @@ def test_discover_models():
     model_ids = [m["model_id"] for m in models]
     assert "EM_VLM4AD_Adapter" in model_ids
     assert "EM_VLM4AD_Freeze" in model_ids
+    assert "EM_VLM4AD_Base" in model_ids
 
     adapter_meta = next(m for m in models if m["model_id"] == "EM_VLM4AD_Adapter")
     assert adapter_meta["has_metrics"] is True
     assert adapter_meta["has_benchmark"] is True
     assert adapter_meta["has_train_progress"] is True
 
-    freeze_meta = next(m for m in models if m["model_id"] == "EM_VLM4AD_Freeze")
-    assert freeze_meta["has_metrics"] is True
-    assert freeze_meta["has_benchmark"] is False  # Freeze doesn't have benchmark.json yet
+    base_meta = next(m for m in models if m["model_id"] == "EM_VLM4AD_Base")
+    assert base_meta["has_metrics"] is True
+    assert base_meta["has_benchmark"] is False
 
 
 def test_merge_train_progress_adapter():
@@ -53,11 +54,24 @@ def test_merge_train_progress_adapter():
     res = merge_train_progress(adapter_dir)
     assert res["total_steps"] > 0
     assert "finetune" in res["stages"]
-    # Total steps in Adapter finetune ends at 106690
     assert len(res["validations"]) >= 10
-    # Steps should be monotonic within stage
-    steps = [s["step"] for s in res["steps"]]
-    assert steps == sorted(steps)
+    # Steps should be monotonic within each stage
+    for stage in res["stages"]:
+        stage_steps = [s["step"] for s in res["steps"] if s["stage"] == stage]
+        assert stage_steps == sorted(stage_steps)
+
+
+def test_base_model_metrics():
+    base_dir = BASE_DIR / "EM_VLM4AD" / "Base"
+    metrics = get_model_metrics(base_dir)
+    assert metrics is not None
+    assert metrics["BLEU-4"] == 45.36
+    assert metrics["METEOR"] == 34.49
+    assert metrics["ROUGE-L"] == 71.98
+    assert metrics["CIDEr"] == 320.0
+    # Overall = (45.36 + 34.49 + 71.98 + 32.0) / 4 = 183.83 / 4 = 45.9575
+    assert metrics["Overall"] == 45.9575
+    assert metrics["BLEU-1"] is None
 
 
 def test_merge_train_progress_freeze():

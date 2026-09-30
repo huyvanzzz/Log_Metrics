@@ -5,6 +5,42 @@ import { THEMES } from '../theme';
 export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeModelId, currentTheme }) {
   const t = currentTheme || THEMES.light;
 
+  const [sortConfig, setSortConfig] = React.useState({
+    key: 'average_generation_ms_per_output_token',
+    direction: 'asc'
+  });
+
+  const handleSort = (key) => {
+    setSortConfig(prev => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      const defaultDir = key === 'tokens_per_second' ? 'desc' : 'asc';
+      return { key, direction: defaultDir };
+    });
+  };
+
+  const sortedBenchmarks = React.useMemo(() => {
+    if (!benchmarks.length) return [];
+    return [...benchmarks].sort((a, b) => {
+      const hasA = a.has_benchmark && a.data && a.data[sortConfig.key] !== undefined;
+      const hasB = b.has_benchmark && b.data && b.data[sortConfig.key] !== undefined;
+
+      if (!hasA && !hasB) return 0;
+      if (!hasA) return 1;
+      if (!hasB) return -1;
+
+      const valA = a.data[sortConfig.key];
+      const valB = b.data[sortConfig.key];
+
+      if (sortConfig.direction === 'asc') {
+        return valA > valB ? 1 : -1;
+      } else {
+        return valA < valB ? 1 : -1;
+      }
+    });
+  }, [benchmarks, sortConfig]);
+
   return (
     <div className={`${t.cardBg} border ${t.cardBorder} rounded-2xl p-5 ${t.cardShadow} transition`}>
       {/* Header */}
@@ -18,7 +54,7 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
               So Sánh Tốc Độ & Phần Cứng
             </h3>
             <p className={`text-xs ${t.textMuted}`}>
-              Độ trễ suy luận (E2E, P50/P95), tốc độ sinh token và bộ nhớ GPU
+              Độ trễ suy luận • Sắp xếp mặc định theo tốc độ ms/token (Nhanh ➔ Chậm)
             </p>
           </div>
         </div>
@@ -33,24 +69,107 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className={`${t.tableHeaderBg} border-b ${t.tableHeaderBorder} ${t.textMuted} uppercase text-[11px] font-semibold tracking-wider`}>
+            <tr className={`${t.tableHeaderBg} border-b ${t.tableHeaderBorder} ${t.textMuted} uppercase text-[11px] font-semibold tracking-wider select-none`}>
               <th className="py-2.5 px-3">Mô hình</th>
-              <th className="py-2.5 px-3 text-right">E2E Mean (ms)</th>
-              <th className="py-2.5 px-3 text-right">E2E P50 (ms)</th>
-              <th className="py-2.5 px-3 text-right">E2E P95 (ms)</th>
-              <th className="py-2.5 px-3 text-right">Gen Mean (ms)</th>
-              <th className="py-2.5 px-3 text-right text-amber-600 dark:text-amber-400 bg-amber-500/10">
-                ⚡ ms/token
+              <th
+                onClick={() => handleSort('e2e_mean_ms')}
+                className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+                title="Sắp xếp theo E2E Mean"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>E2E Mean (ms)</span>
+                  {sortConfig.key === 'e2e_mean_ms' && (
+                    <span className="text-[10px] text-amber-500 font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
               </th>
-              <th className="py-2.5 px-3 text-right text-sky-600 dark:text-sky-400 bg-sky-500/10">
-                🚀 Tokens/s
+              <th
+                onClick={() => handleSort('e2e_p50_ms')}
+                className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>E2E P50 (ms)</span>
+                  {sortConfig.key === 'e2e_p50_ms' && (
+                    <span className="text-[10px] text-amber-500 font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
               </th>
-              <th className="py-2.5 px-3 text-right">Peak VRAM</th>
+              <th
+                onClick={() => handleSort('e2e_p95_ms')}
+                className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>E2E P95 (ms)</span>
+                  {sortConfig.key === 'e2e_p95_ms' && (
+                    <span className="text-[10px] text-amber-500 font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+              </th>
+              <th
+                onClick={() => handleSort('generation_mean_ms')}
+                className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>Gen Mean (ms)</span>
+                  {sortConfig.key === 'generation_mean_ms' && (
+                    <span className="text-[10px] text-amber-500 font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+              </th>
+              <th
+                onClick={() => handleSort('average_generation_ms_per_output_token')}
+                className="py-2.5 px-3 text-right font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 cursor-pointer hover:bg-amber-500/20 transition"
+                title="Sắp xếp theo ms/token (Nhanh nhất lên đầu)"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>⚡ ms/token</span>
+                  {sortConfig.key === 'average_generation_ms_per_output_token' && (
+                    <span className="text-[10px] font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+              </th>
+              <th
+                onClick={() => handleSort('tokens_per_second')}
+                className="py-2.5 px-3 text-right font-bold text-sky-600 dark:text-sky-400 bg-sky-500/10 cursor-pointer hover:bg-sky-500/20 transition"
+                title="Sắp xếp theo Tokens/s"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>🚀 Tokens/s</span>
+                  {sortConfig.key === 'tokens_per_second' && (
+                    <span className="text-[10px] font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+              </th>
+              <th
+                onClick={() => handleSort('peak_cuda_memory_mb')}
+                className="py-2.5 px-3 text-right cursor-pointer hover:opacity-80 transition"
+              >
+                <div className="inline-flex items-center gap-1 justify-end">
+                  <span>Peak VRAM</span>
+                  {sortConfig.key === 'peak_cuda_memory_mb' && (
+                    <span className="text-[10px] text-amber-500 font-bold">
+                      {sortConfig.direction === 'asc' ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+              </th>
               <th className="py-2.5 px-3 text-right">GPU</th>
             </tr>
           </thead>
           <tbody className={`divide-y ${t.tableBorder}`}>
-            {benchmarks.map((row) => {
+            {sortedBenchmarks.map((row) => {
               const isSelected = activeModelId === row.model_id;
               const d = row.data;
               const hasData = row.has_benchmark && d;
