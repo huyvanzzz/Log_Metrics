@@ -47,25 +47,37 @@ export default function TradeoffScatter({ tradeoffData = [], onSelectModelDetail
           borderWidth: 2
         },
         label: {
-          show: true,
-          formatter: (params) => {
-            const raw = params.value[2];
-            return `{title|${raw.model_id}}\n{sub|${raw.y_overall?.toFixed(2)} pts • ${raw.x_latency_per_token?.toFixed(1)} ms}`;
+          show: false
+        },
+        emphasis: {
+          scale: 1.35,
+          itemStyle: {
+            shadowBlur: 16,
+            shadowColor: p.color,
+            borderColor: '#ffffff',
+            borderWidth: 3
           },
-          rich: {
-            title: {
-              color: isLight ? '#0f172a' : '#f8fafc',
-              fontWeight: 'bold',
-              fontSize: 11,
-              padding: [0, 0, 2, 0]
+          label: {
+            show: true,
+            formatter: (params) => {
+              const raw = params.value[2];
+              return `{title|${raw.model_id}}\n{sub|${raw.y_overall?.toFixed(2)} pts • ${raw.x_latency_per_token?.toFixed(2)} ms}`;
             },
-            sub: {
-              color: isLight ? '#64748b' : '#94a3b8',
-              fontSize: 10
-            }
-          },
-          position: 'top',
-          distance: 6
+            rich: {
+              title: {
+                color: isLight ? '#0f172a' : '#f8fafc',
+                fontWeight: 'bold',
+                fontSize: 11,
+                padding: [0, 0, 2, 0]
+              },
+              sub: {
+                color: isLight ? '#64748b' : '#94a3b8',
+                fontSize: 10
+              }
+            },
+            position: 'top',
+            distance: 8
+          }
         }
       };
     });
@@ -168,7 +180,7 @@ export default function TradeoffScatter({ tradeoffData = [], onSelectModelDetail
               Đánh Đổi Tốc Độ & Điểm Số (Trade-off)
             </h3>
             <p className={`text-xs ${t.textMuted}`}>
-              Trục X: ms/token • Trục Y: Overall Score • Mỗi chấm tròn là 1 mô hình
+              Trục X: ms/token • Trục Y: Overall Score • Nhấp vào từng chấm để xem chi tiết
             </p>
           </div>
         </div>
