@@ -7,6 +7,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
   const isLight = t.id === 'light' || t.id === 'paper';
 
   const [sortConfig, setSortConfig] = React.useState({ key: 'Overall', direction: 'desc' });
+  const [limitTop10, setLimitTop10] = React.useState(true);
 
   const handleSort = (key) => {
     setSortConfig(prev => {
@@ -30,6 +31,13 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
     });
   }, [metrics, sortConfig]);
 
+  const displayMetrics = React.useMemo(() => {
+    if (limitTop10) {
+      return sortedMetrics.slice(0, 10);
+    }
+    return sortedMetrics;
+  }, [sortedMetrics, limitTop10]);
+
   const bestScores = React.useMemo(() => {
     if (!metrics.length) return {};
     const keys = ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'METEOR', 'ROUGE-L', 'CIDEr', 'Overall'];
@@ -50,19 +58,39 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
             <Award className="w-4 h-4" />
           </div>
           <div>
-            <h3 className={`text-base font-bold ${t.textPrimary}`}>
-              So Sánh Điểm Số NLP
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className={`text-base font-bold ${t.textPrimary}`}>
+                So Sánh Điểm Số NLP
+              </h3>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                {limitTop10 && sortedMetrics.length > 10 ? `Top 10 / ${sortedMetrics.length}` : `Tất cả (${sortedMetrics.length})`}
+              </span>
+            </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Đối đầu tất cả mô hình • Sắp xếp mặc định theo điểm Overall (Cao ➔ Thấp)
+              Đối đầu mô hình • {limitTop10 ? 'Hiển thị Top 10 cao nhất' : 'Hiển thị toàn bộ mô hình'} (Click cột để đổi sắp xếp)
             </p>
           </div>
         </div>
 
-        {/* Công thức Overall */}
-        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-emerald-600 dark:text-emerald-400 text-xs font-mono`}>
-          <Calculator className="w-3.5 h-3.5 shrink-0" />
-          <span>Overall = (BLEU-4 + METEOR + ROUGE_L + CIDEr/10) / 4</span>
+        {/* Nút Toggle Top 10 & Công thức Overall */}
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {sortedMetrics.length > 10 && (
+            <button
+              onClick={() => setLimitTop10(!limitTop10)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                limitTop10
+                  ? `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 font-bold'
+              }`}
+            >
+              {limitTop10 ? `Xem tất cả (${sortedMetrics.length})` : 'Thu gọn Top 10'}
+            </button>
+          )}
+
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-emerald-600 dark:text-emerald-400 text-xs font-mono`}>
+            <Calculator className="w-3.5 h-3.5 shrink-0" />
+            <span>Overall = (BLEU-4 + METEOR + ROUGE_L + CIDEr/10) / 4</span>
+          </div>
         </div>
       </div>
 
@@ -106,7 +134,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
             </tr>
           </thead>
           <tbody className={`divide-y ${t.tableBorder}`}>
-            {sortedMetrics.map((row) => {
+            {displayMetrics.map((row) => {
               const isSelected = activeModelId === row.model_id;
               return (
                 <tr
@@ -156,6 +184,18 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
           </tbody>
         </table>
       </div>
+
+      {sortedMetrics.length > 10 && limitTop10 && (
+        <div className={`mt-3 text-center text-xs ${t.textMuted} flex items-center justify-center gap-2 border-t ${t.subtleBorder} pt-2`}>
+          <span>* Đang hiển thị Top 10 mô hình có điểm cao nhất.</span>
+          <button
+            onClick={() => setLimitTop10(false)}
+            className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
+          >
+            Xem tất cả {sortedMetrics.length} mô hình ➔
+          </button>
+        </div>
+      )}
     </div>
   );
 }

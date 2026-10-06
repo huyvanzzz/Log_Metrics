@@ -9,6 +9,7 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
     key: 'average_generation_ms_per_output_token',
     direction: 'asc'
   });
+  const [limitTop10, setLimitTop10] = React.useState(true);
 
   const handleSort = (key) => {
     setSortConfig(prev => {
@@ -41,6 +42,13 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
     });
   }, [benchmarks, sortConfig]);
 
+  const displayBenchmarks = React.useMemo(() => {
+    if (limitTop10) {
+      return sortedBenchmarks.slice(0, 10);
+    }
+    return sortedBenchmarks;
+  }, [sortedBenchmarks, limitTop10]);
+
   return (
     <div className={`${t.cardBg} border ${t.cardBorder} rounded-2xl p-5 ${t.cardShadow} transition`}>
       {/* Header */}
@@ -50,18 +58,38 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
             <Gauge className="w-4 h-4" />
           </div>
           <div>
-            <h3 className={`text-base font-bold ${t.textPrimary}`}>
-              So Sánh Tốc Độ & Phần Cứng
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className={`text-base font-bold ${t.textPrimary}`}>
+                So Sánh Tốc Độ & Phần Cứng
+              </h3>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                {limitTop10 && sortedBenchmarks.length > 10 ? `Top 10 / ${sortedBenchmarks.length}` : `Tất cả (${sortedBenchmarks.length})`}
+              </span>
+            </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Độ trễ suy luận • Sắp xếp mặc định theo tốc độ ms/token (Nhanh ➔ Chậm)
+              Độ trễ suy luận • {limitTop10 ? 'Hiển thị Top 10 nhanh nhất' : 'Hiển thị toàn bộ mô hình'} (Click cột để đổi sắp xếp)
             </p>
           </div>
         </div>
 
-        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-xs ${t.textSecondary}`}>
-          <Cpu className="w-3.5 h-3.5 text-sky-500" />
-          <span>GPU: Tesla T4</span>
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {sortedBenchmarks.length > 10 && (
+            <button
+              onClick={() => setLimitTop10(!limitTop10)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                limitTop10
+                  ? `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+                  : 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400 font-bold'
+              }`}
+            >
+              {limitTop10 ? `Xem tất cả (${sortedBenchmarks.length})` : 'Thu gọn Top 10'}
+            </button>
+          )}
+
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-xs ${t.textSecondary}`}>
+            <Cpu className="w-3.5 h-3.5 text-sky-500" />
+            <span>GPU: Tesla T4</span>
+          </div>
         </div>
       </div>
 
@@ -169,7 +197,7 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
             </tr>
           </thead>
           <tbody className={`divide-y ${t.tableBorder}`}>
-            {sortedBenchmarks.map((row) => {
+            {displayBenchmarks.map((row) => {
               const isSelected = activeModelId === row.model_id;
               const d = row.data;
               const hasData = row.has_benchmark && d;
@@ -230,6 +258,18 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
           </tbody>
         </table>
       </div>
+
+      {sortedBenchmarks.length > 10 && limitTop10 && (
+        <div className={`mt-3 text-center text-xs ${t.textMuted} flex items-center justify-center gap-2 border-t ${t.subtleBorder} pt-2`}>
+          <span>* Đang hiển thị Top 10 mô hình có tốc độ nhanh nhất.</span>
+          <button
+            onClick={() => setLimitTop10(false)}
+            className="text-amber-600 dark:text-amber-400 font-semibold hover:underline cursor-pointer"
+          >
+            Xem tất cả {sortedBenchmarks.length} mô hình ➔
+          </button>
+        </div>
+      )}
     </div>
   );
 }
