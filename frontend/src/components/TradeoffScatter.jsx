@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Target, Zap, AlertCircle } from 'lucide-react';
 import { THEMES } from '../theme';
@@ -12,14 +12,32 @@ const SCATTER_COLORS = [
   '#0891b2', // Cyan 600
 ];
 
-export default function TradeoffScatter({ tradeoffData = [], onSelectModelDetail, currentTheme }) {
+export default function TradeoffScatter({
+  tradeoffData = [],
+  selectedModels = [],
+  onSelectModelDetail,
+  currentTheme
+}) {
   const t = currentTheme || THEMES.light;
   const isLight = t.id === 'light' || t.id === 'paper';
+
+  // Chế độ lọc: 'selected' (chỉ hiện các model được chọn) | 'all' (hiện tất cả)
+  const [filterMode, setFilterMode] = useState('selected');
+
+  // Lọc dữ liệu theo chế độ đã chọn
+  const activeTradeoffData = useMemo(() => {
+    if (filterMode === 'selected' && selectedModels && selectedModels.length > 0) {
+      const filtered = tradeoffData.filter(p => selectedModels.includes(p.model_id));
+      // Nếu có mô hình được chọn khớp thì trả về, nếu không có khớp thì trả về toàn bộ
+      return filtered.length > 0 ? filtered : tradeoffData;
+    }
+    return tradeoffData;
+  }, [tradeoffData, selectedModels, filterMode]);
 
   const { validPoints, missingModels } = useMemo(() => {
     const valid = [];
     const missing = [];
-    tradeoffData.forEach((p, idx) => {
+    activeTradeoffData.forEach((p, idx) => {
       if (p.x_latency_per_token !== null && p.y_overall !== null) {
         valid.push({
           ...p,
@@ -30,7 +48,7 @@ export default function TradeoffScatter({ tradeoffData = [], onSelectModelDetail
       }
     });
     return { validPoints: valid, missingModels: missing };
-  }, [tradeoffData]);
+  }, [activeTradeoffData]);
 
   const chartOption = useMemo(() => {
     const series = validPoints.map((p) => {
@@ -176,18 +194,40 @@ export default function TradeoffScatter({ tradeoffData = [], onSelectModelDetail
             <Target className="w-4 h-4" />
           </div>
           <div>
-            <h3 className={`text-base font-bold ${t.textPrimary}`}>
-              Đánh Đổi Tốc Độ & Điểm Số (Trade-off)
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className={`text-base font-bold ${t.textPrimary}`}>
+                Đánh Đổi Tốc Độ & Điểm Số (Trade-off)
+              </h3>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                {filterMode === 'selected' && selectedModels.length > 0
+                  ? `Đã chọn: ${validPoints.length}/${tradeoffData.length}`
+                  : `Tất cả (${validPoints.length})`}
+              </span>
+            </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Trục X: ms/token • Trục Y: Overall Score • Nhấp vào từng chấm để xem chi tiết
+              Trục X: ms/token • Trục Y: Overall Score • {filterMode === 'selected' && selectedModels.length > 0 ? `Đang lọc theo ${validPoints.length} mô hình đã chọn` : 'Tất cả mô hình'} (Nhấp vào chấm để xem)
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 dark:text-indigo-300 text-xs">
-          <Zap className="w-3.5 h-3.5 text-amber-500" />
-          <span>Vùng tối ưu: Góc trên bên trái (Nhanh & Điểm cao)</span>
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {selectedModels.length > 0 && selectedModels.length < tradeoffData.length && (
+            <button
+              onClick={() => setFilterMode(prev => prev === 'selected' ? 'all' : 'selected')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                filterMode === 'selected'
+                  ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-600 dark:text-indigo-400 font-bold'
+                  : `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+              }`}
+            >
+              {filterMode === 'selected' ? `Hiện tất cả (${tradeoffData.length})` : `Chỉ hiện đã chọn (${selectedModels.length})`}
+            </button>
+          )}
+
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 dark:text-indigo-300 text-xs shrink-0">
+            <Zap className="w-3.5 h-3.5 text-amber-500" />
+            <span>Vùng tối ưu: Góc trên bên trái</span>
+          </div>
         </div>
       </div>
 

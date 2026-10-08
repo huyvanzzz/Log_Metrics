@@ -2,13 +2,20 @@ import React from 'react';
 import { Gauge, Cpu, AlertCircle } from 'lucide-react';
 import { THEMES } from '../theme';
 
-export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeModelId, currentTheme }) {
+export default function BenchmarkTable({
+  benchmarks = [],
+  selectedModels = [],
+  onSelectModel,
+  activeModelId,
+  currentTheme
+}) {
   const t = currentTheme || THEMES.light;
 
   const [sortConfig, setSortConfig] = React.useState({
     key: 'average_generation_ms_per_output_token',
     direction: 'asc'
   });
+  const [filterMode, setFilterMode] = React.useState('all'); // 'all' | 'selected'
   const [limitTop10, setLimitTop10] = React.useState(true);
 
   const handleSort = (key) => {
@@ -21,9 +28,17 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
     });
   };
 
+  const filteredBenchmarks = React.useMemo(() => {
+    if (filterMode === 'selected' && selectedModels && selectedModels.length > 0) {
+      const subset = benchmarks.filter(b => selectedModels.includes(b.model_id));
+      return subset.length > 0 ? subset : benchmarks;
+    }
+    return benchmarks;
+  }, [benchmarks, selectedModels, filterMode]);
+
   const sortedBenchmarks = React.useMemo(() => {
-    if (!benchmarks.length) return [];
-    return [...benchmarks].sort((a, b) => {
+    if (!filteredBenchmarks.length) return [];
+    return [...filteredBenchmarks].sort((a, b) => {
       const hasA = a.has_benchmark && a.data && a.data[sortConfig.key] !== undefined;
       const hasB = b.has_benchmark && b.data && b.data[sortConfig.key] !== undefined;
 
@@ -40,14 +55,14 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
         return valA < valB ? 1 : -1;
       }
     });
-  }, [benchmarks, sortConfig]);
+  }, [filteredBenchmarks, sortConfig]);
 
   const displayBenchmarks = React.useMemo(() => {
-    if (limitTop10) {
+    if (limitTop10 && filterMode !== 'selected') {
       return sortedBenchmarks.slice(0, 10);
     }
     return sortedBenchmarks;
-  }, [sortedBenchmarks, limitTop10]);
+  }, [sortedBenchmarks, limitTop10, filterMode]);
 
   return (
     <div className={`${t.cardBg} border ${t.cardBorder} rounded-2xl p-5 ${t.cardShadow} transition`}>
@@ -63,17 +78,34 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
                 So Sánh Tốc Độ & Phần Cứng
               </h3>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                {limitTop10 && sortedBenchmarks.length > 10 ? `Top 10 / ${sortedBenchmarks.length}` : `Tất cả (${sortedBenchmarks.length})`}
+                {filterMode === 'selected' && selectedModels.length > 0
+                  ? `Đã chọn: ${displayBenchmarks.length}/${benchmarks.length}`
+                  : limitTop10 && sortedBenchmarks.length > 10
+                  ? `Top 10 / ${sortedBenchmarks.length}`
+                  : `Tất cả (${sortedBenchmarks.length})`}
               </span>
             </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Độ trễ suy luận • {limitTop10 ? 'Hiển thị Top 10 nhanh nhất' : 'Hiển thị toàn bộ mô hình'} (Click cột để đổi sắp xếp)
+              Độ trễ suy luận • {filterMode === 'selected' && selectedModels.length > 0 ? `Chỉ hiển thị ${displayBenchmarks.length} mô hình đã chọn` : limitTop10 ? 'Hiển thị Top 10 nhanh nhất' : 'Hiển thị toàn bộ mô hình'} (Click cột để đổi sắp xếp)
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-          {sortedBenchmarks.length > 10 && (
+          {selectedModels.length > 0 && selectedModels.length < benchmarks.length && (
+            <button
+              onClick={() => setFilterMode(prev => prev === 'selected' ? 'all' : 'selected')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                filterMode === 'selected'
+                  ? 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400 font-bold'
+                  : `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+              }`}
+            >
+              {filterMode === 'selected' ? `Hiện tất cả (${benchmarks.length})` : `Chỉ hiện đã chọn (${selectedModels.length})`}
+            </button>
+          )}
+
+          {sortedBenchmarks.length > 10 && filterMode !== 'selected' && (
             <button
               onClick={() => setLimitTop10(!limitTop10)}
               className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
@@ -86,7 +118,7 @@ export default function BenchmarkTable({ benchmarks = [], onSelectModel, activeM
             </button>
           )}
 
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-xs ${t.textSecondary}`}>
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-xs ${t.textSecondary} shrink-0`}>
             <Cpu className="w-3.5 h-3.5 text-sky-500" />
             <span>GPU: Tesla T4</span>
           </div>
