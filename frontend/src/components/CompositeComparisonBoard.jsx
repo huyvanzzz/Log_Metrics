@@ -117,7 +117,7 @@ export default function CompositeComparisonBoard({
           </div>
           <div className="flex items-center gap-2 font-mono text-xs">
             <span className={`px-2 py-0.5 rounded border ${t.subtleBorder} ${t.cardBg} ${t.textSecondary}`}>
-              Model: <strong className="text-sky-500">{allModels.length}</strong>
+              Đang so sánh: <strong className="text-sky-500">{selectedModels.length > 0 ? `${selectedModels.length} / ${allModels.length}` : allModels.length}</strong> mô hình
             </span>
             <span className={`px-2 py-0.5 rounded border ${t.subtleBorder} ${t.cardBg} ${t.textSecondary}`}>
               Merge: <strong className="text-emerald-500">Deduplicated</strong>
@@ -139,6 +139,7 @@ export default function CompositeComparisonBoard({
         {/* 2. Trade-off Scatter Plot */}
         <TradeoffScatter
           tradeoffData={tradeoffData}
+          selectedModels={selectedModels}
           onSelectModelDetail={onSelectModelDetail}
           currentTheme={currentTheme}
         />
@@ -146,6 +147,7 @@ export default function CompositeComparisonBoard({
         {/* 3. Metrics Table */}
         <MetricsTable
           metrics={metricsData}
+          selectedModels={selectedModels}
           onSelectModel={onSelectModelDetail}
           activeModelId={activeModelId}
           currentTheme={currentTheme}
@@ -154,6 +156,7 @@ export default function CompositeComparisonBoard({
         {/* 4. Benchmark Table */}
         <BenchmarkTable
           benchmarks={benchmarkData}
+          selectedModels={selectedModels}
           onSelectModel={onSelectModelDetail}
           activeModelId={activeModelId}
           currentTheme={currentTheme}

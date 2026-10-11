@@ -2,11 +2,19 @@ import React from 'react';
 import { Award, Calculator } from 'lucide-react';
 import { THEMES } from '../theme';
 
-export default function MetricsTable({ metrics = [], onSelectModel, activeModelId, currentTheme }) {
+export default function MetricsTable({
+  metrics = [],
+  selectedModels = [],
+  onSelectModel,
+  activeModelId,
+  currentTheme
+}) {
   const t = currentTheme || THEMES.light;
   const isLight = t.id === 'light' || t.id === 'paper';
 
   const [sortConfig, setSortConfig] = React.useState({ key: 'Overall', direction: 'desc' });
+  const [filterMode, setFilterMode] = React.useState('all'); // 'all' | 'selected'
+  const [limitTop10, setLimitTop10] = React.useState(true);
 
   const handleSort = (key) => {
     setSortConfig(prev => {
@@ -17,9 +25,17 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
     });
   };
 
+  const filteredMetrics = React.useMemo(() => {
+    if (filterMode === 'selected' && selectedModels && selectedModels.length > 0) {
+      const subset = metrics.filter(m => selectedModels.includes(m.model_id));
+      return subset.length > 0 ? subset : metrics;
+    }
+    return metrics;
+  }, [metrics, selectedModels, filterMode]);
+
   const sortedMetrics = React.useMemo(() => {
-    if (!metrics.length) return [];
-    return [...metrics].sort((a, b) => {
+    if (!filteredMetrics.length) return [];
+    return [...filteredMetrics].sort((a, b) => {
       const valA = a[sortConfig.key] ?? -999999;
       const valB = b[sortConfig.key] ?? -999999;
       if (sortConfig.direction === 'asc') {
@@ -28,7 +44,14 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
         return valA < valB ? 1 : -1;
       }
     });
-  }, [metrics, sortConfig]);
+  }, [filteredMetrics, sortConfig]);
+
+  const displayMetrics = React.useMemo(() => {
+    if (limitTop10 && filterMode !== 'selected') {
+      return sortedMetrics.slice(0, 10);
+    }
+    return sortedMetrics;
+  }, [sortedMetrics, limitTop10, filterMode]);
 
   const bestScores = React.useMemo(() => {
     if (!metrics.length) return {};
@@ -50,19 +73,56 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
             <Award className="w-4 h-4" />
           </div>
           <div>
-            <h3 className={`text-base font-bold ${t.textPrimary}`}>
-              So Sánh Điểm Số NLP
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className={`text-base font-bold ${t.textPrimary}`}>
+                So Sánh Điểm Số NLP
+              </h3>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                {filterMode === 'selected' && selectedModels.length > 0
+                  ? `Đã chọn: ${displayMetrics.length}/${metrics.length}`
+                  : limitTop10 && sortedMetrics.length > 10
+                  ? `Top 10 / ${sortedMetrics.length}`
+                  : `Tất cả (${sortedMetrics.length})`}
+              </span>
+            </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Đối đầu tất cả mô hình • Sắp xếp mặc định theo điểm Overall (Cao ➔ Thấp)
+              Đối đầu mô hình • {filterMode === 'selected' && selectedModels.length > 0 ? `Chỉ hiển thị ${displayMetrics.length} mô hình đã chọn` : limitTop10 ? 'Hiển thị Top 10 cao nhất' : 'Hiển thị toàn bộ mô hình'} (Click cột để đổi sắp xếp)
             </p>
           </div>
         </div>
 
-        {/* Công thức Overall */}
-        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-emerald-600 dark:text-emerald-400 text-xs font-mono`}>
-          <Calculator className="w-3.5 h-3.5 shrink-0" />
-          <span>Overall = (BLEU-4 + METEOR + ROUGE_L + CIDEr/10) / 4</span>
+        {/* Nút lọc & Công thức Overall */}
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          {selectedModels.length > 0 && selectedModels.length < metrics.length && (
+            <button
+              onClick={() => setFilterMode(prev => prev === 'selected' ? 'all' : 'selected')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                filterMode === 'selected'
+                  ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 font-bold'
+                  : `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+              }`}
+            >
+              {filterMode === 'selected' ? `Hiện tất cả (${metrics.length})` : `Chỉ hiện đã chọn (${selectedModels.length})`}
+            </button>
+          )}
+
+          {sortedMetrics.length > 10 && filterMode !== 'selected' && (
+            <button
+              onClick={() => setLimitTop10(!limitTop10)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                limitTop10
+                  ? `${t.subtleBg} ${t.subtleBorder} ${t.textSecondary} hover:${t.textPrimary}`
+                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 font-bold'
+              }`}
+            >
+              {limitTop10 ? `Xem tất cả (${sortedMetrics.length})` : 'Thu gọn Top 10'}
+            </button>
+          )}
+
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${t.subtleBorder} ${t.subtleBg} text-emerald-600 dark:text-emerald-400 text-xs font-mono shrink-0`}>
+            <Calculator className="w-3.5 h-3.5 shrink-0" />
+            <span>Overall = (BLEU-4 + METEOR + ROUGE_L + CIDEr/10) / 4</span>
+          </div>
         </div>
       </div>
 
@@ -106,7 +166,7 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
             </tr>
           </thead>
           <tbody className={`divide-y ${t.tableBorder}`}>
-            {sortedMetrics.map((row) => {
+            {displayMetrics.map((row) => {
               const isSelected = activeModelId === row.model_id;
               return (
                 <tr
@@ -156,6 +216,18 @@ export default function MetricsTable({ metrics = [], onSelectModel, activeModelI
           </tbody>
         </table>
       </div>
+
+      {sortedMetrics.length > 10 && limitTop10 && (
+        <div className={`mt-3 text-center text-xs ${t.textMuted} flex items-center justify-center gap-2 border-t ${t.subtleBorder} pt-2`}>
+          <span>* Đang hiển thị Top 10 mô hình có điểm cao nhất.</span>
+          <button
+            onClick={() => setLimitTop10(false)}
+            className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
+          >
+            Xem tất cả {sortedMetrics.length} mô hình ➔
+          </button>
+        </div>
+      )}
     </div>
   );
 }

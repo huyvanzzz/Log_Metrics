@@ -46,8 +46,13 @@ def discover_models(base_dir: Path = BASE_LOG_DIR) -> List[Dict[str, Any]]:
 
             if has_metrics or has_bench or has_progress:
                 model_name = normalize_model_name(sub, base_dir)
+                rel = sub.relative_to(base_dir)
+                group_name = rel.parts[0] if len(rel.parts) > 1 else "Root"
+                sub_name = "/".join(rel.parts[1:]) if len(rel.parts) > 1 else rel.parts[0]
                 models.append({
                     "model_id": model_name,
+                    "group": group_name,
+                    "sub_name": sub_name,
                     "folder_path": str(sub),
                     "has_metrics": has_metrics,
                     "has_benchmark": has_bench,
