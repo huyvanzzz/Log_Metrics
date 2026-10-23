@@ -1,0 +1,13 @@
+{
+    "input_file": "/kaggle/input/datasets/cinminhcit/1910-ablation4-mvpruner-finetune-epoch10/predictions.jsonl",
+    "num_samples": 16817,
+    "metrics": {
+        "BLEU-1": 62.0642,
+        "BLEU-2": 56.1372,
+        "BLEU-3": 51.2985,
+        "BLEU-4": 46.7497,
+        "ROUGE-L": 72.0997,
+        "CIDEr": 319.8716,
+        "METEOR": 38.1791
+    }
+}
