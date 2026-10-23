@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-BASE_LOG_DIR = Path("d:/AD/Visualize/Log")
+BASE_LOG_DIR = Path(__file__).resolve().parent.parent / "Log"
 
 
 def normalize_model_name(model_dir: Path, base_dir: Path = BASE_LOG_DIR) -> str:
