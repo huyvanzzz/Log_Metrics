@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { Activity, Layers, Columns2, Eye, Folder, ChevronDown, Check, Search, X } from 'lucide-react';
+import { Activity, Layers, Columns2, Eye, Folder, FolderPlus, ChevronDown, Check, Search, X } from 'lucide-react';
 import { THEMES } from '../theme';
 
 const MODEL_COLORS = [
@@ -109,56 +109,74 @@ export default function LossVisualizer({
     return result;
   }, [groupedModels, searchTerm]);
 
-  // Tạo option cho ECharts - HOÀN TOÀN KHÔNG DÙNG TITLE TRONG CANVAS ĐỂ TRÁNH ĐÈ CHỮ
+  // Tạo option cho ECharts theo thuần Epoch (tính trung bình loss theo từng epoch)
   const buildStageChartOption = (stageFilter) => {
     const series = [];
     const legendData = [];
 
     selectedModels.forEach((modelId, idx) => {
       const modelLog = lossData[modelId];
-      if (!modelLog || !modelLog.steps) return;
+      if (!modelLog) return;
 
       const baseColor = MODEL_COLORS[idx % MODEL_COLORS.length];
 
-      // Lọc steps theo stageFilter
-      let filteredSteps = [];
-      if (stageFilter === 'all') {
-        filteredSteps = modelLog.steps;
-      } else {
-        filteredSteps = modelLog.steps.filter(s => s.stage === stageFilter);
+      // Lấy danh sách epochs từ backend hoặc tự động gom nhóm từ steps nếu fallback
+      let epochsList = modelLog.epochs;
+      if (!epochsList && modelLog.steps) {
+        const groups = {};
+        modelLog.steps.forEach(s => {
+          if (s.epoch != null && s.loss != null) {
+            const key = `${s.stage || 'default'}_${s.epoch}`;
+            if (!groups[key]) groups[key] = { stage: s.stage, epoch: s.epoch, losses: [] };
+            groups[key].losses.push(s.loss);
+          }
+        });
+        epochsList = Object.values(groups).map(g => ({
+          stage: g.stage,
+          epoch: g.epoch,
+          train_loss: g.losses.length ? g.losses.reduce((a, b) => a + b, 0) / g.losses.length : null,
+          val_loss: null
+        }));
       }
 
-      if (filteredSteps.length === 0) return;
+      if (!epochsList || epochsList.length === 0) return;
 
-      const dataPoints = filteredSteps
-        .filter(s => s.loss !== null && s.loss !== undefined && (scaleType !== 'log' || s.loss > 0))
-        .map(s => [s.step, s.loss, s]);
+      let filteredEpochs = epochsList;
+      if (stageFilter !== 'all') {
+        filteredEpochs = epochsList.filter(e => e.stage === stageFilter);
+      }
+      if (filteredEpochs.length === 0) return;
 
-      legendData.push(modelId);
-      series.push({
-        name: modelId,
-        type: 'line',
-        data: dataPoints,
-        smooth: 0.15,
-        showSymbol: false,
-        z: 2, // Đường loss ở lớp dưới
-        lineStyle: {
-          color: baseColor,
-          width: 2.2,
-          type: 'solid'
-        },
-        itemStyle: { color: baseColor }
-      });
+      filteredEpochs.sort((a, b) => a.epoch - b.epoch);
 
-      // Validation points (ĐƯỢC ĐẶT LÊN LỚP TRÊN CÙNG Z: 10 ĐỂ KHÔNG BỊ LINE LOSS ĐÈ)
-      if (showValLoss && modelLog.validations) {
-        let filteredVals = modelLog.validations;
-        if (stageFilter !== 'all') {
-          filteredVals = modelLog.validations.filter(v => v.stage === stageFilter);
-        }
-        const valPoints = filteredVals
-          .filter(v => v.val_loss !== null && (scaleType !== 'log' || v.val_loss > 0))
-          .map(v => [v.step, v.val_loss, v]);
+      const trainDataPoints = filteredEpochs
+        .filter(e => e.train_loss !== null && e.train_loss !== undefined && (scaleType !== 'log' || e.train_loss > 0))
+        .map(e => [e.epoch, e.train_loss, e]);
+
+      if (trainDataPoints.length > 0) {
+        legendData.push(modelId);
+        series.push({
+          name: modelId,
+          type: 'line',
+          data: trainDataPoints,
+          smooth: true,
+          showSymbol: true,
+          symbolSize: 6,
+          z: 2,
+          lineStyle: {
+            color: baseColor,
+            width: 2.4,
+            type: 'solid'
+          },
+          itemStyle: { color: baseColor }
+        });
+      }
+
+      // Điểm Validation Loss theo Epoch (z: 10 đặt lên trên)
+      if (showValLoss) {
+        const valPoints = filteredEpochs
+          .filter(e => e.val_loss !== null && e.val_loss !== undefined && (scaleType !== 'log' || e.val_loss > 0))
+          .map(e => [e.epoch, e.val_loss, e]);
 
         if (valPoints.length > 0) {
           const valName = `${modelId} (Val)`;
@@ -167,8 +185,8 @@ export default function LossVisualizer({
             name: valName,
             type: 'scatter',
             symbol: 'diamond',
-            symbolSize: 11, // Tăng kích thước kim cương rõ nét hơn
-            z: 10, // Ưu tiên hiển thị đè lên trên tất cả các đường line
+            symbolSize: 11,
+            z: 10,
             data: valPoints,
             itemStyle: {
               color: isLight ? '#ffffff' : '#0f172a',
@@ -191,7 +209,6 @@ export default function LossVisualizer({
 
     return {
       backgroundColor: 'transparent',
-      // Legend đặt gọn ở giữa trên cùng với type: 'scroll' để không bao giờ bị tràn hay đè chữ
       legend: {
         type: 'scroll',
         orient: 'horizontal',
@@ -212,7 +229,7 @@ export default function LossVisualizer({
         formatter: (params) => {
           if (!params || !params.length) return '';
           let header = `<div class="font-bold border-b pb-1 mb-1" style="border-color:${t.chart.border}">
-            Step: ${params[0].value[0]?.toLocaleString()}
+            Epoch: ${params[0].value[0]}
           </div>`;
           let items = params.map(p => {
             const lossVal = typeof p.value[1] === 'number' ? p.value[1].toFixed(4) : p.value[1];
@@ -229,7 +246,6 @@ export default function LossVisualizer({
           return header + items;
         }
       },
-      // Grid top: 38 tạo khoảng trống 34px an toàn bên dưới legend
       grid: {
         top: 38,
         left: 45,
@@ -239,16 +255,18 @@ export default function LossVisualizer({
       },
       xAxis: {
         type: 'value',
-        name: 'Step',
+        name: 'Epoch',
         nameLocation: 'middle',
-        nameGap: 22,
-        nameTextStyle: { color: t.chart.text, fontSize: 10 },
+        nameGap: 24,
+        min: 1,
+        minInterval: 1,
+        nameTextStyle: { color: t.chart.text, fontSize: 11, fontWeight: 'bold' },
         splitLine: { lineStyle: { color: t.chart.split, type: 'dashed' } },
         axisLine: { lineStyle: { color: t.chart.border } },
         axisLabel: {
           color: t.chart.text,
-          fontSize: 10,
-          formatter: val => (val >= 1000 ? `${val / 1000}k` : val)
+          fontSize: 11,
+          formatter: val => `Ep ${val}`
         }
       },
       yAxis: {
@@ -293,7 +311,7 @@ export default function LossVisualizer({
               Đường Cong Loss
             </h3>
             <p className={`text-xs ${t.textMuted}`}>
-              Tách biệt Align & Finetune • Max 5 mô hình • Nhấp vào line để soi chi tiết
+              Trung bình theo Epoch • Tách biệt Align & Finetune • Max 5 mô hình • Nhấp vào line để soi chi tiết
             </p>
           </div>
         </div>
@@ -561,8 +579,28 @@ export default function LossVisualizer({
         </div>
       </div>
 
-      {/* VÙNG BIỂU ĐỒ - HOÀN TOÀN KHÔNG BỊ CHÈN CHỮ VÀO NHAU */}
-      {stageMode === 'split' ? (
+      {/* VÙNG BIỂU ĐỒ HOẶC EMPTY STATE */}
+      {selectedModels.length === 0 ? (
+        <div className={`p-8 rounded-xl border border-dashed ${t.subtleBorder} ${t.subtleBg} flex flex-col items-center justify-center text-center my-2 py-12`}>
+          <div className="p-3.5 rounded-2xl bg-sky-500/10 text-sky-500 mb-3 shadow-xs">
+            <FolderPlus className="w-8 h-8" />
+          </div>
+          <h4 className={`text-base font-bold mb-1 ${t.textPrimary}`}>
+            Chưa có mô hình nào được chọn để so sánh
+          </h4>
+          <p className={`text-xs max-w-md ${t.textMuted} mb-4 leading-relaxed`}>
+            Vui lòng nhấp vào nút <strong>"Chọn mô hình"</strong> ở trên để tích chọn các mô hình bạn muốn đối đầu.
+            Biểu đồ sẽ tự động tính toán và hiển thị trung bình <strong>Train Loss</strong> và <strong>Validation Loss</strong> theo từng <strong>Epoch</strong> cho cả 2 giai đoạn Align & Finetune.
+          </p>
+          <button
+            onClick={() => setIsDropdownOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-md shadow-sky-500/20 cursor-pointer transition active:scale-95"
+          >
+            <Folder className="w-4 h-4" />
+            <span>Mở danh sách chọn mô hình</span>
+          </button>
+        </div>
+      ) : stageMode === 'split' ? (
         /* CHẾ ĐỘ TÁCH 2 CỘT: TIÊU ĐỀ NẰM TRONG HEADER HTML ĐỘC LẬP TRÊN TỪNG KHUNG */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Cột 1: Stage 1 Align */}
@@ -586,7 +624,7 @@ export default function LossVisualizer({
               />
             </div>
             <div className={`text-[11px] ${t.textMuted} text-center mt-2`}>
-              Tiến trình huấn luyện khởi tạo căn chỉnh (Stage 1)
+              Tiến trình huấn luyện khởi tạo căn chỉnh theo từng Epoch (Stage 1)
             </div>
           </div>
 
@@ -611,7 +649,7 @@ export default function LossVisualizer({
               />
             </div>
             <div className={`text-[11px] ${t.textMuted} text-center mt-2`}>
-              Tiến trình huấn luyện tinh chỉnh toàn diện (Stage 2)
+              Tiến trình huấn luyện tinh chỉnh toàn diện theo từng Epoch (Stage 2)
             </div>
           </div>
         </div>
@@ -647,7 +685,8 @@ export default function LossVisualizer({
       {/* Footer chú thích */}
       <div className={`mt-3 pt-2 border-t ${t.subtleBorder} flex flex-wrap items-center justify-between text-[11px] ${t.textMuted}`}>
         <div className="flex items-center gap-3">
-          <span>• Line: <strong>Train Loss</strong></span>
+          <span>• Trục hoành: <strong>Epoch</strong></span>
+          <span>• Line: <strong>Train Loss (Trung bình/Epoch)</strong></span>
           <span>• Điểm ♦: <strong>Validation Loss</strong></span>
         </div>
         <div className="italic">

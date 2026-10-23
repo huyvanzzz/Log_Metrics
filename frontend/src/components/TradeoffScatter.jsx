@@ -201,11 +201,11 @@ export default function TradeoffScatter({
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
                 {filterMode === 'selected' && selectedModels.length > 0
                   ? `Đã chọn: ${validPoints.length}/${tradeoffData.length}`
-                  : `Tất cả (${validPoints.length})`}
+                  : `Tổng quan (${validPoints.length})`}
               </span>
             </div>
             <p className={`text-xs ${t.textMuted}`}>
-              Trục X: ms/token • Trục Y: Overall Score • {filterMode === 'selected' && selectedModels.length > 0 ? `Đang lọc theo ${validPoints.length} mô hình đã chọn` : 'Tất cả mô hình'} (Nhấp vào chấm để xem)
+              Trục X: ms/token • Trục Y: Overall Score • {selectedModels.length > 0 && filterMode === 'selected' ? `Đang lọc theo ${validPoints.length} mô hình đã chọn` : 'Hiển thị tổng quan mô hình (Chọn mô hình bên trên để lọc)'}
             </p>
           </div>
         </div>

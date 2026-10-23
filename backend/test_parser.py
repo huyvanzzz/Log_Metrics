@@ -80,3 +80,38 @@ def test_merge_train_progress_freeze():
     assert "align" in res["stages"]
     assert "finetune" in res["stages"]
     assert len(res["validations"]) >= 6
+
+
+def test_merge_train_progress_epoch_aggregation(tmp_path):
+    import json
+    log_file = tmp_path / "train_progress.jsonl"
+    entries = [
+        {"event": "epoch_start", "stage": "finetune", "epoch": 1, "global_step": 0},
+        {"event": "train_step", "stage": "finetune", "epoch": 1, "global_step": 1, "loss": 1.2},
+        {"event": "train_step", "stage": "finetune", "epoch": 1, "global_step": 2, "loss": 0.8},
+        {"event": "epoch_end", "stage": "finetune", "epoch": 1, "train_loss": 1.0, "val_loss": 0.5},
+        {"event": "epoch_start", "stage": "finetune", "epoch": 2, "global_step": 2},
+        {"event": "train_step", "stage": "finetune", "epoch": 2, "global_step": 3, "loss": 0.6},
+        {"event": "validation_end", "stage": "finetune", "epoch": 2, "global_step": 3, "val_loss": 0.4},
+    ]
+    with open(log_file, "w", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    res = merge_train_progress(tmp_path)
+    assert "epochs" in res
+    epochs = res["epochs"]
+    assert len(epochs) == 2
+    # Epoch 1: avg loss = (1.2 + 0.8) / 2 = 1.0, val_loss = 0.5
+    assert epochs[0]["epoch"] == 1
+    assert epochs[0]["stage"] == "finetune"
+    assert epochs[0]["train_loss"] == 1.0
+    assert epochs[0]["val_loss"] == 0.5
+    assert epochs[0]["steps_count"] == 2
+
+    # Epoch 2: avg loss = 0.6, val_loss = 0.4
+    assert epochs[1]["epoch"] == 2
+    assert epochs[1]["train_loss"] == 0.6
+    assert epochs[1]["val_loss"] == 0.4
+    assert epochs[1]["steps_count"] == 1
+

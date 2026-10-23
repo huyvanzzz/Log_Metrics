@@ -117,7 +117,11 @@ export default function CompositeComparisonBoard({
           </div>
           <div className="flex items-center gap-2 font-mono text-xs">
             <span className={`px-2 py-0.5 rounded border ${t.subtleBorder} ${t.cardBg} ${t.textSecondary}`}>
-              Đang so sánh: <strong className="text-sky-500">{selectedModels.length > 0 ? `${selectedModels.length} / ${allModels.length}` : allModels.length}</strong> mô hình
+              {selectedModels.length > 0 ? (
+                <>Đang so sánh: <strong className="text-sky-500">{selectedModels.length} / {allModels.length}</strong> mô hình</>
+              ) : (
+                <>Chưa chọn mô hình • <strong className="text-amber-500">0 / {allModels.length}</strong></>
+              )}
             </span>
             <span className={`px-2 py-0.5 rounded border ${t.subtleBorder} ${t.cardBg} ${t.textSecondary}`}>
               Merge: <strong className="text-emerald-500">Deduplicated</strong>

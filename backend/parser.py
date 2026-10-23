@@ -75,6 +75,8 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
     steps_dict: Dict[tuple, Dict[str, Any]] = {}
     validations: List[Dict[str, Any]] = []
     checkpoints: List[Dict[str, Any]] = []
+    epoch_ends: Dict[tuple, Dict[str, Any]] = {}
+    val_by_epoch: Dict[tuple, List[float]] = {}
     stages_order: List[str] = []
 
     for file_path in files:
@@ -93,12 +95,19 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
                 if stage not in stages_order:
                     stages_order.append(stage)
 
+                ep = data.get("epoch")
                 if event == "train_step":
                     step = data.get("global_step")
                     # Ghi đè nếu trùng để giữ trạng thái resume mới nhất
                     steps_dict[(stage, step)] = data
                 elif event == "validation_end":
                     validations.append(data)
+                    vl = data.get("val_loss")
+                    if ep is not None and vl is not None:
+                        val_by_epoch.setdefault((stage, ep), []).append(float(vl))
+                elif event == "epoch_end":
+                    if ep is not None:
+                        epoch_ends[(stage, ep)] = data
                 elif event == "checkpoint_saved":
                     checkpoints.append(data)
 
@@ -161,12 +170,50 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
             "timestamp": v.get("timestamp")
         })
 
+    # Gom nhóm theo từng epoch để tính trung bình train loss & val loss thuần Epoch
+    stage_epoch_losses: Dict[tuple, List[float]] = {}
+    for (st, step), d in steps_dict.items():
+        ep = d.get("epoch")
+        loss = d.get("loss")
+        if ep is not None and loss is not None:
+            stage_epoch_losses.setdefault((st, ep), []).append(float(loss))
+
+    all_epoch_keys = set(stage_epoch_losses.keys()) | set(epoch_ends.keys()) | set(val_by_epoch.keys())
+    clean_epochs = []
+    for st in stages_order:
+        ep_numbers = sorted([ep for (s, ep) in all_epoch_keys if s == st])
+        for ep in ep_numbers:
+            ep_end_d = epoch_ends.get((st, ep), {})
+            losses = stage_epoch_losses.get((st, ep), [])
+            # Ưu tiên lấy train_loss chính thức từ sự kiện epoch_end được trainer ghi nhận
+            if ep_end_d.get("train_loss") is not None:
+                avg_train = round(float(ep_end_d["train_loss"]), 5)
+            elif losses:
+                avg_train = round(sum(losses) / len(losses), 5)
+            else:
+                avg_train = None
+
+            val_l = None
+            if ep_end_d.get("val_loss") is not None:
+                val_l = round(float(ep_end_d["val_loss"]), 5)
+            elif (st, ep) in val_by_epoch and len(val_by_epoch[(st, ep)]) > 0:
+                val_l = round(sum(val_by_epoch[(st, ep)]) / len(val_by_epoch[(st, ep)]), 5)
+
+            clean_epochs.append({
+                "stage": st,
+                "epoch": ep,
+                "train_loss": avg_train,
+                "val_loss": val_l,
+                "steps_count": len(losses)
+            })
+
     return {
         "stages": stages_order,
         "stage_boundaries": stage_boundaries,
         "total_steps": len(sorted_steps),
         "steps": clean_steps,
         "validations": clean_validations,
+        "epochs": clean_epochs,
         "checkpoints_count": len(checkpoints)
     }
 

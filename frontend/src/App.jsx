@@ -37,9 +37,7 @@ export default function App() {
       setMetricsData(metricsRes);
       setBenchmarkData(benchRes);
       setTradeoffData(tradeoffRes);
-
-      const initialSelected = modelsRes.slice(0, 5).map(m => m.model_id);
-      setSelectedModels(prev => (prev.length > 0 ? prev : initialSelected));
+      // Khởi tạo ban đầu không tự động chọn model nào theo yêu cầu người dùng
     } catch (err) {
       console.error('Lỗi khi fetch dữ liệu:', err);
     } finally {
@@ -49,7 +47,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedModels.length === 0) return;
+    if (selectedModels.length === 0) {
+      setLossData({});
+      return;
+    }
 
     let isMounted = true;
     const fetchLoss = async () => {
