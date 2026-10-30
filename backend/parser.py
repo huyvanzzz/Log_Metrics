@@ -76,6 +76,7 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
     validations: List[Dict[str, Any]] = []
     checkpoints: List[Dict[str, Any]] = []
     epoch_ends: Dict[tuple, Dict[str, Any]] = {}
+    val_ends: Dict[tuple, Dict[str, Any]] = {}
     val_by_epoch: Dict[tuple, List[float]] = {}
     stages_order: List[str] = []
 
@@ -105,6 +106,10 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
                     vl = data.get("val_loss")
                     if ep is not None and vl is not None:
                         val_by_epoch.setdefault((stage, ep), []).append(float(vl))
+                    if ep is not None:
+                        prev = val_ends.get((stage, ep))
+                        if prev is None or data.get("global_step", 0) >= prev.get("global_step", 0):
+                            val_ends[(stage, ep)] = data
                 elif event == "epoch_end":
                     if ep is not None:
                         epoch_ends[(stage, ep)] = data
@@ -178,23 +183,30 @@ def merge_train_progress(model_dir: Path) -> Dict[str, Any]:
         if ep is not None and loss is not None:
             stage_epoch_losses.setdefault((st, ep), []).append(float(loss))
 
-    all_epoch_keys = set(stage_epoch_losses.keys()) | set(epoch_ends.keys()) | set(val_by_epoch.keys())
+    all_epoch_keys = set(stage_epoch_losses.keys()) | set(epoch_ends.keys()) | set(val_ends.keys()) | set(val_by_epoch.keys())
     clean_epochs = []
     for st in stages_order:
         ep_numbers = sorted([ep for (s, ep) in all_epoch_keys if s == st])
         for ep in ep_numbers:
+            val_end_d = val_ends.get((st, ep), {})
             ep_end_d = epoch_ends.get((st, ep), {})
             losses = stage_epoch_losses.get((st, ep), [])
-            # Ưu tiên lấy train_loss chính thức từ sự kiện epoch_end được trainer ghi nhận
-            if ep_end_d.get("train_loss") is not None:
+
+            # Lấy train_loss: ưu tiên validation_end hoặc epoch_end của trainer
+            if val_end_d.get("train_loss") is not None:
+                avg_train = round(float(val_end_d["train_loss"]), 5)
+            elif ep_end_d.get("train_loss") is not None:
                 avg_train = round(float(ep_end_d["train_loss"]), 5)
             elif losses:
                 avg_train = round(sum(losses) / len(losses), 5)
             else:
                 avg_train = None
 
+            # Lấy val_loss: ưu tiên validation_end hoặc epoch_end
             val_l = None
-            if ep_end_d.get("val_loss") is not None:
+            if val_end_d.get("val_loss") is not None:
+                val_l = round(float(val_end_d["val_loss"]), 5)
+            elif ep_end_d.get("val_loss") is not None:
                 val_l = round(float(ep_end_d["val_loss"]), 5)
             elif (st, ep) in val_by_epoch and len(val_by_epoch[(st, ep)]) > 0:
                 val_l = round(sum(val_by_epoch[(st, ep)]) / len(val_by_epoch[(st, ep)]), 5)
