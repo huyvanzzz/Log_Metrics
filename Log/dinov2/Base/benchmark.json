@@ -1,0 +1,48 @@
+{
+  "e2e_mean_ms": 182.401202,
+  "e2e_p50_ms": 63.187829,
+  "e2e_p95_ms": 554.009689,
+  "average_generation_ms_per_output_token": 10.885827,
+  "tokens_per_second": 91.862562,
+  "prefill_mean_ms": 14.534449,
+  "prefill_p50_ms": 14.176974,
+  "prefill_p95_ms": 15.822316,
+  "prefill_flops_mean_gflops": 12.139239834,
+  "prefill_flops_p50_gflops": 12.076818432,
+  "prefill_flops_p95_gflops": 12.978495488,
+  "prefill_measurement": {
+    "status": "supported",
+    "scope": "feature embeddings/fusion/projector/pruning + T5 encoder + first decoder forward including LM head",
+    "excluded_from_scope": [
+      "data loading",
+      "host-to-device transfer",
+      "vision extraction",
+      "subsequent decoding",
+      "token/beam selection",
+      "text postprocessing"
+    ],
+    "flops_method": "torch.utils.flop_counter.FlopCounterMode; estimated supported major operators",
+    "flops_per_mac": 2,
+    "flops_attention_backend": "math SDPA with native MHA fastpath disabled; latency uses original backend",
+    "flops_excluded_ops": [
+      "normalization",
+      "softmax",
+      "activation/elementwise operations",
+      "sorting/indexing/gather",
+      "CPU control flow"
+    ],
+    "num_beams": 3,
+    "warmup_samples": 3,
+    "protocol": "T5 adaptation; not an exact reproduction of the MVPruner measurement protocol"
+  },
+  "unpruned": {
+    "visual_tokens": 384,
+    "training_gradient_checkpointing": true,
+    "inference_gradient_checkpointing": false
+  },
+  "device": "cuda",
+  "python": "3.13.15",
+  "torch": "2.11.0+cu128",
+  "gpu": "Tesla T4",
+  "peak_cuda_memory": 196178944
+}
