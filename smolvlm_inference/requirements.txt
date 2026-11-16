@@ -1,0 +1,8 @@
+# Separate from the dashboard environment. Keep Kaggle's CUDA-compatible Torch.
+transformers==4.46.3
+tokenizers==0.20.4
+huggingface-hub>=0.26,<1
+numpy>=1.26,<3
+pillow>=10,<13
+kagglehub>=0.3,<2
+safetensors>=0.4.3

@@ -13,3 +13,11 @@ frontend/.cache/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Inference artifacts stay outside Git.
+*.pt
+*.pth
+*.safetensors
+*.memmap
+*.rng/
+inference_outputs/
