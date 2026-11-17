@@ -155,7 +155,7 @@ def test_reject_incompatible_checkpoint(tmp_path, monkeypatch, mutation):
     if mutation == 'signature':
         data['architecture_signature']['geometry']['vision_dim'] += 1
     elif mutation == 'camera':
-        data['architecture_signature']['prompt_camera_order'] = list(reversed(module.CAMERA_ORDER))
+        data['architecture_signature']['prompt_camera_order'] = module.CAMERA_ORDER[1:] + module.CAMERA_ORDER[:1]
     elif mutation == 'missing':
         data['model_state_dict'].pop(next(iter(data['model_state_dict'])))
     else:

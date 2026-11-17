@@ -11,9 +11,10 @@ CAMERA_ORDER = ['Front', 'Front-Left', 'Front-Right', 'Back', 'Back-Left', 'Back
 
 
 def validate_prompt_camera_order(order):
-    if list(order) != CAMERA_ORDER:
-        raise ValueError('inference requires canonical six-camera order')
-    return list(CAMERA_ORDER)
+    order = list(order)
+    if order not in (CAMERA_ORDER, list(reversed(CAMERA_ORDER))):
+        raise ValueError('prompt camera order must be canonical or its exact reverse')
+    return order
 
 def _canonical(value):
     return json.loads(json.dumps(value, sort_keys=True, default=str))
@@ -135,7 +136,7 @@ def _check_attention(native):
         raise ValueError('actual native attention modules must be vision eager and text sdpa')
 
 
-def load_model(checkpoint_path, device='cuda'):
+def load_model(checkpoint_path, device='cuda', *, expected_prompt_camera_order=None):
     """Restore a complete canonical checkpoint without downloading pretrained weights."""
     checkpoint_path = Path(checkpoint_path).resolve()
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
@@ -146,8 +147,11 @@ def load_model(checkpoint_path, device='cuda'):
         raise ValueError('checkpoint requires full architecture_signature and model_state_dict')
     if signature.get('model_id') != MODEL_ID or signature.get('model_revision') != MODEL_REVISION:
         raise ValueError('checkpoint must use the pinned SmolVLM model and revision')
-    validate_prompt_camera_order(signature.get('prompt_camera_order', CAMERA_ORDER))
-    validate_prompt_camera_order(signature.get('processor', {}).get('camera_order', []))
+    order = validate_prompt_camera_order(signature.get('prompt_camera_order', CAMERA_ORDER))
+    if expected_prompt_camera_order is not None and order != validate_prompt_camera_order(expected_prompt_camera_order):
+        raise ValueError('checkpoint prompt camera order differs from requested model order')
+    if signature.get('processor', {}).get('camera_order') != CAMERA_ORDER:
+        raise ValueError('processor/cache camera order must remain canonical')
     config = AutoConfig.from_pretrained(MODEL_ID, revision=MODEL_REVISION, token=False)
     if config.model_type != 'idefics3':
         raise ValueError('native SmolVLM requires Idefics3 configuration')
@@ -157,7 +161,8 @@ def load_model(checkpoint_path, device='cuda'):
     native.generation_config = GenerationConfig.from_pretrained(
         MODEL_ID, revision=MODEL_REVISION, token=False)
     _check_attention(native)
-    model = CachedSmolVLM(native, processor, model_revision=MODEL_REVISION)
+    model = CachedSmolVLM(native, processor, model_revision=MODEL_REVISION,
+                         prompt_camera_order=order)
     if model.architecture_signature != signature:
         raise ValueError('checkpoint architecture_signature does not match native model and processor')
     model.load_state_dict(checkpoint['model_state_dict'], strict=True)

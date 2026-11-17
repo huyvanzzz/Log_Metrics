@@ -21,13 +21,13 @@ class InferenceSession:
         self.collator = CachedBatchCollator(
             self.processor, image_seq_len=self.model.geometry['visual_tokens_per_view'],
             max_length=self.model.native.config.text_config.max_position_embeddings,
-            generation=True, max_new_tokens=512, prompt_camera_order=CAMERA_ORDER)
+            generation=True, max_new_tokens=512, prompt_camera_order=self.model.prompt_camera_order)
         self.checkpoint = str(Path(checkpoint))
 
     def describe(self):
         return dict(checkpoint=self.checkpoint, metadata=self.model.checkpoint_metadata,
                     model_id=self.model.model_id, revision=self.model.model_revision,
-                    camera_order=CAMERA_ORDER, dtype='float32', cache_dtype='float16',
+                    camera_order=list(self.model.prompt_camera_order), dtype='float32', cache_dtype='float16',
                     visual_tokens=self.model.visual_token_len, device=str(self.device),
                     cache_fingerprint=self.cache.manifest['fingerprint'],
                     samples=self.cache.counts)
@@ -45,4 +45,4 @@ class InferenceSession:
         prediction = self.processor.tokenizer.batch_decode(continuation, skip_special_tokens=True)[0]
         return dict(sample_id=sample['sample_id'], split=split, index=index,
                     question=sample['question'], ground_truth=sample['answer'],
-                    prediction=prediction, camera_order=list(CAMERA_ORDER))
+                    prediction=prediction, camera_order=list(self.model.prompt_camera_order))
