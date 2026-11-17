@@ -40,7 +40,7 @@ def records(path):
 
 
 class FeatureCache:
-    def __init__(self, directory, prepared_directory, identity):
+    def __init__(self, directory, prepared_directory, identity, *, progress=None):
         self.directory = Path(directory)
         self.prepared = Path(prepared_directory)
         manifest = json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
@@ -56,12 +56,19 @@ class FeatureCache:
         if manifest.get('index_sha256') != digest(self.directory / 'index.json'):
             raise ValueError('Cache index hash mismatch')
         counts, required = {}, set()
+        declared_counts = manifest.get('record_counts', {})
         for split in ('train', 'val', 'test'):
             count = 0
+            if progress:
+                progress(dict(stage=split, completed=0, total=declared_counts.get(split, 0)))
             for row in records(self.prepared / f'{split}.jsonl'):
                 required.add(record_key(row))
                 count += 1
+                if progress and count % 1000 == 0:
+                    progress(dict(stage=split, completed=count, total=declared_counts.get(split, 0)))
             counts[split] = count
+            if progress:
+                progress(dict(stage=split, completed=count, total=count))
         prepared_manifest = json.loads((self.prepared / 'manifest.json').read_text(encoding='utf-8'))
         if counts != prepared_manifest.get('counts') or counts != manifest.get('record_counts'):
             raise ValueError('Prepared record counts mismatch')
@@ -78,9 +85,14 @@ class FeatureCache:
             raise ValueError('Cache feature file size mismatch')
         self.array = np.memmap(payload, dtype=np.float16, mode='r', shape=tuple(shape))
         flat = self.array.reshape(-1)
+        if progress:
+            progress(dict(stage='features', completed=0, total=flat.nbytes))
         for offset in range(0, flat.size, 1024 * 1024):
             if not np.isfinite(flat[offset:offset + 1024 * 1024]).all():
                 raise ValueError('Cache contains nonfinite features')
+            if progress:
+                progress(dict(stage='features', completed=min(offset + 1024 * 1024, flat.size) * 2,
+                              total=flat.nbytes))
         self.manifest = manifest
         self.counts = counts
 

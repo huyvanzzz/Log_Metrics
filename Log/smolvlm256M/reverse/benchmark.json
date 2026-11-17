@@ -1,0 +1,120 @@
+{
+  "e2e_mean_ms": 683.850341,
+  "e2e_p50_ms": 334.904371,
+  "e2e_p95_ms": 1167.064666,
+  "average_generation_ms_per_output_token": 48.16138,
+  "tokens_per_second": 20.763525,
+  "prefill_mean_ms": 146.325091,
+  "prefill_p50_ms": 146.284408,
+  "prefill_p95_ms": 153.931025,
+  "prefill_flops_mean_gflops": 425.487693383,
+  "prefill_flops_p50_gflops": 426.677241216,
+  "prefill_flops_p95_gflops": 446.771811456,
+  "backend": "smolvlm_native",
+  "model_revision": "7e3e67edbbed1bf9888184d9df282b700a323964",
+  "visual_tokens": 384,
+  "cache_dtype": "float16",
+  "compute_dtype": "float32",
+  "feature_input_dtype": "float32",
+  "parameter_dtype": "float32",
+  "optimizer_state_dtype": "float32",
+  "precision": "fp32",
+  "persistent_workers": true,
+  "prompt_camera_order": [
+    "Back-Right",
+    "Back-Left",
+    "Back",
+    "Front-Right",
+    "Front-Left",
+    "Front"
+  ],
+  "gradient_checkpointing": true,
+  "gradient_checkpointing_configured": true,
+  "gradient_checkpointing_active": false,
+  "attention_backend": {
+    "vision": "eager",
+    "text": "sdpa"
+  },
+  "frozen_modules": [
+    "vision_model"
+  ],
+  "trainable_modules": [
+    "connector",
+    "text_model",
+    "lm_head"
+  ],
+  "loss_type": "native_causal_ce",
+  "prefill_measurement": {
+    "status": "supported",
+    "scope": "feature connector + embedding merge + native beam expansion + first full-prompt causal LM forward including LM head and KV cache",
+    "excluded_from_scope": [
+      "data loading",
+      "tokenization",
+      "H2D",
+      "vision extraction",
+      "token/beam selection",
+      "subsequent decoding",
+      "text decoding"
+    ],
+    "num_beams": 3,
+    "warmup_samples": 3,
+    "flops_method": "torch.utils.flop_counter.FlopCounterMode",
+    "flops_per_mac": 2,
+    "flops_convention": "dense_attention_estimate",
+    "flops_attention_backend": "math SDPA only during FLOPs; latency uses native SDPA",
+    "flops_excluded_ops": [
+      "normalization",
+      "softmax",
+      "RoPE/elementwise",
+      "indexing/merge",
+      "CPU control flow"
+    ],
+    "protocol": "native SmolVLM causal prefill; not the T5 prefill protocol"
+  },
+  "flops_measurement": {
+    "status": "supported",
+    "scope": "feature connector + embedding merge + native beam expansion + first full-prompt causal LM forward including LM head and KV cache",
+    "excluded_from_scope": [
+      "data loading",
+      "tokenization",
+      "H2D",
+      "vision extraction",
+      "token/beam selection",
+      "subsequent decoding",
+      "text decoding"
+    ],
+    "num_beams": 3,
+    "warmup_samples": 3,
+    "flops_method": "torch.utils.flop_counter.FlopCounterMode",
+    "flops_per_mac": 2,
+    "flops_convention": "dense_attention_estimate",
+    "flops_attention_backend": "math SDPA only during FLOPs; latency uses native SDPA",
+    "flops_excluded_ops": [
+      "normalization",
+      "softmax",
+      "RoPE/elementwise",
+      "indexing/merge",
+      "CPU control flow"
+    ],
+    "protocol": "native SmolVLM causal prefill; not the T5 prefill protocol"
+  },
+  "generation_scope": "connector + embedding merge + native generation; inputs already on device",
+  "e2e_scope": "H2D + connector + embedding merge + generation + decode; excludes loader/tokenization/vision",
+  "cuda_peak_memory_bytes": 1452261888,
+  "num_samples": 100,
+  "warmup_samples": 3,
+  "num_beams": 3,
+  "generation_settings": {
+    "max_new_tokens": 512,
+    "num_beams": 3,
+    "early_stopping": true,
+    "length_penalty": 1.0
+  },
+  "checkpoint": "/kaggle/working/Efficient_VLM_For_Autonomous_Driving/outputs/smolvlm_256m_kaggle_2gpu_no_pruner/checkpoints/finetune_best.pt",
+  "checkpoint_gradient_checkpointing": true,
+  "device": "cuda",
+  "python": "3.13.16",
+  "torch": "2.11.0+cu130",
+  "transformers": "4.46.3",
+  "gpu": "Tesla T4"
+}

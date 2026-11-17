@@ -22,3 +22,4 @@ Thumbs.db
 *.rng/
 inference_outputs/
 attention_outputs/
+generated_attention_outputs/

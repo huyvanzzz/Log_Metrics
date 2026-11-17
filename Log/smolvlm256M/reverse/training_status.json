@@ -1,0 +1,7 @@
+{
+  "completed_epochs": 2,
+  "target_epochs": 2,
+  "training_complete": true,
+  "global_step": 56898,
+  "optimizer_step": 7114
+}

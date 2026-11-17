@@ -177,7 +177,7 @@ def run_worker(config_path, model_name):
             device=device, checkpoint=state, progress=progress)
         if accumulator.count != len(ids) or accumulator.pending_ids:
             raise RuntimeError('Measurement did not cover every test sample')
-        metadata = dict(status='complete', model=model_name, **fingerprint_data,
+        metadata = dict(status='complete', model_name=model_name, **fingerprint_data,
             count=accumulator.count, shape=list(shape), fingerprint=fingerprint,
             checkpoint_metadata=model.checkpoint_metadata,
             cache_descriptor=config['cache_descriptor'], source_commit=config.get('source_commit'),

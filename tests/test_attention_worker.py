@@ -4,6 +4,28 @@ import numpy as np
 import pytest
 
 
+def test_completion_metadata_keeps_repository_and_model_name():
+    """Exercise the actual final metadata expression without loading GPU weights."""
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace as NS
+    import platform
+    import time
+    import smolvlm_attention.worker as worker
+    tree = ast.parse(Path(worker.__file__).read_text(encoding='utf-8'))
+    assignment = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'metadata' for target in node.targets))
+    expression = ast.Expression(assignment.value)
+    namespace = dict(model_name='reverse', fingerprint_data=dict(model='huyvanzzz/256M_reverse'),
+        accumulator=NS(count=16817), shape=(30,384), fingerprint='run', model=NS(checkpoint_metadata={}),
+        config=dict(cache_descriptor='receipt',source_commit='commit',prepared_repo='data',prepared_revision='revision'),
+        spec=dict(gpu=1), platform=platform, time=time, start=time.time(), device='cuda:0', final_batch=8,
+        torch=NS(__version__='test',cuda=NS(get_device_name=lambda d:'GPU',max_memory_reserved=lambda d:123)))
+    metadata = eval(compile(expression, '<completion metadata>', 'eval'), namespace)
+    assert metadata['model'] == 'huyvanzzz/256M_reverse'
+    assert metadata['model_name'] == 'reverse' and metadata['count'] == 16817
+
+
 def test_oom_retry_does_not_commit_failed_samples():
     import torch
     from smolvlm_attention.worker import process_pending

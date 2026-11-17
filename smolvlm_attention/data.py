@@ -39,13 +39,13 @@ def _camera_order(order):
     return validate_prompt_camera_order(order)
 
 
-def validate_cache(cache_dir, prepared_dir, output_dir, expected_fingerprint=None):
+def validate_cache(cache_dir, prepared_dir, output_dir, expected_fingerprint=None, *, progress=None):
     directory, prepared = Path(cache_dir).resolve(), Path(prepared_dir).resolve()
     manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
     identity = {key: manifest[key] for key in IDENTITY_KEYS}
     if identity['storage_dtype'] != 'float16' or identity['camera_order'] != CAMERA_ORDER:
         raise ValueError('cache must use canonical FP16 storage')
-    reader = FeatureCache(directory, prepared, identity)
+    reader = FeatureCache(directory, prepared, identity, **({'progress': progress} if progress else {}))
     if expected_fingerprint is not None and reader.manifest['fingerprint'] != expected_fingerprint:
         raise ValueError('cache fingerprint differs from expected fingerprint')
     descriptor = dict(version=1, cache_dir=str(directory), prepared_dir=str(prepared),
