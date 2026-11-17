@@ -6,7 +6,7 @@ import zipfile
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
-from matplotlib.colors import Normalize, LogNorm
+from matplotlib.colors import LogNorm
 from matplotlib.cm import ScalarMappable
 import numpy as np
 
@@ -46,10 +46,16 @@ def shared_scales(means: list[np.ndarray]) -> dict:
     maximum = max(float(a.max()) for a in arrays)
     # An all-zero model still needs nondegenerate axes and linear bin edges.
     maximum = maximum if maximum > 0 else 1.0
+    positive_minima = [float(a[a > 0].min()) for a in arrays if np.any(a > 0)]
+    minimum = min(positive_minima) if positive_minima else maximum * 1e-6
+    log_minimum = max(np.finfo(float).tiny, 10. ** np.floor(np.log10(minimum)))
+    if log_minimum >= maximum:
+        log_minimum = maximum / 10
     edges = np.linspace(0, maximum, 101)
     count_maximum = max(int(np.histogram(row, bins=edges)[0].max())
                         for array in arrays for row in array)
-    return {'vmax': maximum, 'histogram_edges': edges,
+    return {'vmax': maximum, 'log_vmin': log_minimum, 'attention_scale': 'log',
+            'zero_display': 'no bar; gray heatmap cell', 'histogram_edges': edges,
             'histogram_vmax': count_maximum}
 
 
@@ -68,7 +74,7 @@ def _export(fig, out_dir, name, dpi):
 def plot_token_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -> list[Path]:
     """Plot 384 raw-valued bars in each of fifteen even-layer panels."""
     mean, names = _mean(mean), _cameras(camera_order)
-    norm = Normalize(0, scales['vmax'])
+    norm = LogNorm(scales['log_vmin'], scales['vmax'])
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(5, 3, figsize=(24, 20), layout='constrained')
         for ax, layer in zip(axes.flat, _LAYERS):
@@ -77,8 +83,9 @@ def plot_token_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -> 
                    color=plt.colormaps['viridis'](norm(values)))
             for boundary in range(64, 384, 64):
                 ax.axvline(boundary - .5, color='0.5', linewidth=.7)
-            ax.set(xlim=(-.5, 383.5), ylim=(0, scales['vmax']),
-                   title=f'Layer {layer}', ylabel='Mean attention')
+            ax.set_yscale('log')
+            ax.set(xlim=(-.5, 383.5), ylim=(scales['log_vmin'], scales['vmax']),
+                   title=f'Layer {layer}', ylabel='Mean attention (log)')
             ax.set_xticks([0, 64, 128, 192, 256, 320, 383])
             ax.set_xlabel('Image-token index')
             camera_axis = ax.secondary_xaxis('top')
@@ -89,14 +96,15 @@ def plot_token_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -> 
             ax.set_title(f'Layer {layer}', pad=43)
         fig.suptitle(title, fontsize=22)
         fig.colorbar(ScalarMappable(norm=norm, cmap='viridis'), ax=axes,
-                     label='Mean attention', shrink=.65, pad=.02)
+                     label='Mean attention (log; zero has no bar)', shrink=.65, pad=.02)
         return _export(fig, out_dir, 'token_atlas', dpi)
 
 
 def plot_spatial_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -> list[Path]:
     """Preserve camera/token order: six untransformed 8x8 maps per panel row."""
     mean, names = _mean(mean), _cameras(camera_order)
-    norm = Normalize(0, scales['vmax'])
+    norm = LogNorm(scales['log_vmin'], scales['vmax'])
+    cmap = plt.colormaps['viridis'].with_extremes(bad='lightgray')
     with plt.rc_context(_STYLE):
         fig = plt.figure(figsize=(24, 12), layout='constrained')
         grid = fig.add_gridspec(5, 4, width_ratios=[1, 1, 1, .045],
@@ -107,8 +115,8 @@ def plot_spatial_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -
             panel.suptitle(f'Layer {layer}', fontsize=15)
             row = panel.subplots(1, 6, gridspec_kw={'wspace': .08})
             for camera, (ax, name) in enumerate(zip(row, names)):
-                ax.imshow(mean[layer, camera * 64:(camera + 1) * 64].reshape(8, 8),
-                          cmap='viridis', norm=norm, origin='upper',
+                ax.imshow(np.ma.masked_equal(mean[layer, camera * 64:(camera + 1) * 64].reshape(8, 8), 0),
+                          cmap=cmap, norm=norm, origin='upper',
                           interpolation='none', aspect='equal')
                 ax.set_title(name, fontsize=10, rotation=30, pad=8)
                 ax.set_xticks([])
@@ -119,8 +127,8 @@ def plot_spatial_atlas(mean, camera_order, out_dir, *, title, scales, dpi=300) -
         fig.suptitle(title, fontsize=22)
         # A separate outer colorbar avoids changing any individual camera width.
         colorbar_ax = fig.add_subplot(grid[:, 3])
-        fig.colorbar(ScalarMappable(norm=norm, cmap='viridis'), cax=colorbar_ax,
-                     label='Mean attention')
+        fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=colorbar_ax,
+                     label='Mean attention (log; zero = gray)')
         return _export(fig, out_dir, 'spatial_atlas', dpi)
 
 

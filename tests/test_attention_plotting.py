@@ -26,6 +26,7 @@ def test_shared_scales_use_both_models_and_all_layers():
     assert len(scales['histogram_edges']) == 101
     assert np.allclose(np.diff(scales['histogram_edges']), .02)
     assert scales['histogram_vmax'] == 384
+    assert 0 < scales['log_vmin'] < scales['vmax']
 
 
 @pytest.mark.parametrize('function,basename', [
@@ -51,7 +52,8 @@ def test_figures_encode_correct_values_and_export(function, basename, tmp_path, 
         panels = [ax for ax in fig.axes if len(ax.patches) == 384]
         assert len(panels) == 15
         assert np.allclose([p.get_height() for p in panels[-1].patches], mean[28])
-        assert all(ax.get_ylim() == (0, scales['vmax']) for ax in panels)
+        assert all(ax.get_yscale() == 'log' for ax in panels)
+        assert all(ax.get_ylim() == (scales['log_vmin'], scales['vmax']) for ax in panels)
         assert np.array_equal(panels[0].get_xticks(), [0, 64, 128, 192, 256, 320, 383])
         assert panels[0].get_xlabel() == 'Image-token index'
         assert [t.get_text() for t in panels[0].child_axes[0].get_xticklabels()] == CAMERAS
@@ -60,10 +62,12 @@ def test_figures_encode_correct_values_and_export(function, basename, tmp_path, 
         assert len(panels) == 90
         for camera, ax in enumerate(panels[:6]):
             im = ax.images[0]
-            assert np.array_equal(im.get_array(), mean[0, camera*64:(camera+1)*64].reshape(8, 8))
+            assert np.array_equal(np.ma.filled(im.get_array(), 0), mean[0, camera*64:(camera+1)*64].reshape(8, 8))
             assert im.origin == 'upper'
             assert im.get_interpolation() == 'none'
-            assert im.norm.vmin == 0 and im.norm.vmax == scales['vmax']
+            assert isinstance(im.norm, LogNorm)
+            assert im.norm.vmin == scales['log_vmin'] and im.norm.vmax == scales['vmax']
+        assert np.ma.getmaskarray(panels[0].images[0].get_array())[0,0]
         assert len({round(ax.get_position().y0, 6) for ax in panels[:6]}) == 1
     else:
         ax = next(ax for ax in fig.axes if ax.images)
@@ -79,6 +83,15 @@ def test_figures_encode_correct_values_and_export(function, basename, tmp_path, 
         assert np.array_equal(ax.get_xticks(), np.arange(30))
         assert np.ma.getmaskarray(im.get_array()).any()
     assert not plt.fignum_exists(fig.number)
+
+
+@pytest.mark.parametrize('value', [0., 1e-8])
+def test_log_scales_have_positive_non_degenerate_bounds(value):
+    means = np.full((30,384), value)
+    scales = shared_scales([means])
+    assert 0 < scales['log_vmin'] < scales['vmax']
+    if value:
+        assert scales['log_vmin'] <= value <= scales['vmax']
 
 
 def test_zip_requires_complete_models_and_only_archives_figures(tmp_path):

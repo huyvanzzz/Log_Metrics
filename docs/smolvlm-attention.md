@@ -43,6 +43,16 @@ excluded. The plotting style follows the local figures4papers reference (white
 background, sans-serif typography, vector text), with the requested viridis and
 magma colormaps; no third-party plot helpers or LaTeX installation are needed.
 
+Token-atlas Y axes and viridis attention colors use a shared logarithmic scale
+across all layers and both models. Attention values remain raw probabilities.
+Zero has no bar and is shown as gray in spatial maps. Histogram attention bins
+remain linear; only histogram counts use logarithmic colors.
+
+To redraw an existing Kaggle run, update `smolvlm_attention/plotting.py` in the
+actual source folder, reload that module with `importlib.reload`, then rerun
+cells 7–14. Preserve the original `RUN_CONFIG` and output files; do not rerun
+bootstrap or measurement cells merely to change figure scales.
+
 Local verification: `python -m pytest -q tests backend/test_parser.py` after
 installing Torch, pytest and `smolvlm_attention/requirements.txt` in a virtual
 environment. Synthetic CPU tests establish collector/order/batch parity and
