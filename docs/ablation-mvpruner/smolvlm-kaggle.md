@@ -25,6 +25,13 @@ và 2.065 câu không có nhãn camera. Mặc định chọn câu có tag hợp 
 minh họa. Thêm `--example-id` vào lệnh `prepare` để chọn một dòng test theo
 chỉ số từ 0 trước khi đo.
 
+Nếu Hugging Face trả HTTP 429, lệnh tải sẽ đợi theo thời gian máy chủ báo rồi
+thử lại. Khi cần chạy lại cell `prepare`, giữ nguyên `DATA_DIR` để dùng lại
+các file đã tải. Lệnh dùng tải HTTP tuần tự cho tập test. Nếu quota ẩn danh
+vẫn hết, thêm Hugging Face token quyền Read vào Kaggle Secrets, bật quyền truy cập
+secret cho notebook, rồi đặt `HF_TOKEN_SECRET` bằng **tên secret** trong cell
+cấu hình. Cũng có thể dùng biến môi trường `HF_TOKEN`.
+
 `measure` đối chiếu attention trích xuất với attention native trên một câu
 trước khi chạy. Các câu dùng chung bộ sáu ảnh dùng lại đặc trưng của bộ đó.
 Worker chạy FP32, lưu kết quả sau mỗi bộ ảnh và giảm batch khi hết VRAM.

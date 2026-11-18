@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from tempfile import NamedTemporaryFile
+import time
 
 
 CAMERAS = ('CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT',
@@ -127,22 +128,47 @@ def _test_records(payload):
     return records
 
 
-def fetch_hf_test(output):
+def _rate_limit_wait(headers, attempt):
+    waits = []
+    retry_after = headers.get('Retry-After', '')
+    if retry_after.isdecimal():
+        waits.append(int(retry_after) + 1)
+    rate_limit = re.search(r'(?:^|;)\s*t=(\d+)', headers.get('RateLimit', ''))
+    if rate_limit:
+        waits.append(int(rate_limit[1]) + 1)
+    return max(waits, default=30 * (2 ** attempt))
+
+
+def fetch_hf_test(output, *, token=None):
     """Download only the pinned test JSON and images that it references."""
-    from functools import partial
-
     from huggingface_hub import hf_hub_download
-    from tqdm.contrib.concurrent import thread_map
+    from huggingface_hub.errors import HfHubHTTPError
+    from tqdm.auto import tqdm
 
-    download = partial(hf_hub_download, HF_DATASET, repo_type='dataset',
-                       revision=HF_REVISION, local_dir=output, token=False)
+    def download(filename):
+        for attempt in range(4):
+            try:
+                return hf_hub_download(HF_DATASET, filename, repo_type='dataset',
+                                       revision=HF_REVISION, local_dir=output, token=token)
+            except HfHubHTTPError as exc:
+                response = exc.response
+                if response is None or response.status_code != 429:
+                    raise
+                if attempt == 3:
+                    raise RuntimeError('Hugging Face still returns HTTP 429. Re-run with the same DATA_DIR '
+                                       'after the quota resets, or use HF_TOKEN or HF_TOKEN_SECRET.') from exc
+                seconds = _rate_limit_wait(response.headers, attempt)
+                tqdm.write(f'Hugging Face returned HTTP 429. Retrying in {seconds} seconds.')
+                time.sleep(seconds)
+
     test_file = Path(download(HF_TEST_PATH))
     records = _test_records(test_file.read_bytes())
     images = sorted({_relative_image(views[camera], camera)
                      for _, views in records for camera in CAMERAS})
     if len(images) != IMAGE_COUNT:
         raise ValueError(f'Expected {IMAGE_COUNT:,} distinct test images, found {len(images):,}')
-    thread_map(download, images, max_workers=8, desc='Hugging Face test images', unit='image')
+    for filename in tqdm(images, desc='Hugging Face test images', unit='image'):
+        download(filename)
     return test_file
 
 

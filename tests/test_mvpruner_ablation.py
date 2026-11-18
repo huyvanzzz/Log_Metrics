@@ -56,19 +56,28 @@ def test_kaggle_inputs_report_missing_and_ambiguous_paths(tmp_path):
 
 def test_fetch_hf_downloads_only_images_referenced_by_test(tmp_path, monkeypatch):
     import huggingface_hub
+    from huggingface_hub.errors import HfHubHTTPError
+    from requests import Response
     from smolvlm_attention.mvpruner_ablation import data
 
     images = {camera: f'data/nuscenes/samples/{camera}/test.jpg' for camera in data.CAMERAS}
     records = [[{'Q': 'First question?'}, images], [{'Q': 'Second question?'}, images]]
     monkeypatch.setattr(data, 'TEST_COUNT', len(records))
     monkeypatch.setattr(data, 'IMAGE_COUNT', len(images))
-    calls = []
+    calls, waits = [], []
+    first_image = sorted(path.removeprefix('data/') for path in images.values())[0]
+    monkeypatch.setattr(data.time, 'sleep', waits.append)
 
     def download(repo_id, filename, **kwargs):
         assert repo_id == data.HF_DATASET
         assert kwargs == dict(repo_type='dataset', revision=data.HF_REVISION,
-                              local_dir=tmp_path, token=False)
+                              local_dir=tmp_path, token='test-token')
         calls.append(filename)
+        if filename == first_image and calls.count(filename) == 1:
+            response = Response()
+            response.status_code = 429
+            response.headers['RateLimit'] = '"resolvers";r=0;t=19'
+            raise HfHubHTTPError('Rate limited', response=response)
         path = tmp_path / filename
         if filename == data.HF_TEST_PATH:
             path.parent.mkdir()
@@ -76,9 +85,11 @@ def test_fetch_hf_downloads_only_images_referenced_by_test(tmp_path, monkeypatch
         return str(path)
 
     monkeypatch.setattr(huggingface_hub, 'hf_hub_download', download)
-    assert data.fetch_hf_test(tmp_path) == tmp_path / data.HF_TEST_PATH
+    assert data.fetch_hf_test(tmp_path, token='test-token') == tmp_path / data.HF_TEST_PATH
     assert calls[0] == data.HF_TEST_PATH
-    assert sorted(calls[1:]) == sorted(path.removeprefix('data/') for path in images.values())
+    assert calls[1] == calls[2] == first_image
+    assert sorted(calls[2:]) == sorted(path.removeprefix('data/') for path in images.values())
+    assert waits == [20]
 
 
 def test_entropy_is_reduced_in_the_requested_order():

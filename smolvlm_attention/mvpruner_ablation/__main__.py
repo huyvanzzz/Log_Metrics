@@ -26,7 +26,17 @@ def main():
 
     args = parser.parse_args()
     if args.step == 'fetch-hf':
-        print(f'Test file: {fetch_hf_test(args.output)}')
+        # Use the Hub's HTTP download path for these small files instead of one Xet token request per image.
+        os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+        token = os.environ.get('HF_TOKEN') or None
+        if token is None and (secret_name := os.environ.get('HF_TOKEN_SECRET')):
+            from kaggle_secrets import UserSecretsClient
+
+            token = UserSecretsClient().get_secret(secret_name)
+        try:
+            print(f'Test file: {fetch_hf_test(args.output, token=token)}')
+        except RuntimeError as exc:
+            parser.error(str(exc))
         return
     try:
         args.image_root, args.test = resolve_inputs(
