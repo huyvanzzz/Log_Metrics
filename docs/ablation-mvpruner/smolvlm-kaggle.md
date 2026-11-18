@@ -5,10 +5,15 @@
 1. Đưa mã lên nhánh Git mà Kaggle có thể đọc. Mở
    `notebooks/kaggle_smolvlm_mvpruner_ablation.ipynb`, bật Internet và chọn một GPU.
    Notebook dùng PyTorch CUDA có sẵn của Kaggle.
-2. Gắn dataset dưới dạng Kaggle Input. Đặt `DATA_DIR` thành thư mục có
-   `nuscenes/samples/` và chỉnh `TEST_JSON` nếu file test nằm ở vị trí khác
-   so với `multi_frame/multi_frame_test.json`. Chỉnh `SOURCE_BRANCH` nếu nhánh
-   chứa mã khác với giá trị trong notebook.
+2. Notebook mặc định lấy dữ liệu từ
+   [DriveLM nuScenes trên Hugging Face](https://huggingface.co/datasets/minhdang0901/drivelm-nuscenes-v1-0).
+   Cell chuẩn bị tải `multi_frame/multi_frame_test.json` và đúng 1.134 ảnh
+   mà file test tham chiếu, vào `/kaggle/working/drivelm-nuscenes-v1-0`.
+   Phiên bản dataset được ghim trong `smolvlm_attention/mvpruner_ablation/data.py`.
+   Nếu dùng Kaggle Input, đặt `DATA_SOURCE=kaggle-input` và để trống
+   `DATA_DIR`, `TEST_JSON` để tự tìm dưới `/kaggle/input`. Nếu có nhiều đường
+   dẫn trùng tên, đặt các biến đường dẫn theo thông báo của CLI.
+   Chỉnh `SOURCE_BRANCH` nếu mã nằm trên nhánh khác.
 3. Chạy lần lượt các cell cấu hình, thiết lập, `prepare`, `measure` và `plot`.
    Mặc định dùng `finetune_best.pt` của checkpoint base được ghim trong
    `smolvlm_attention/config.py`. Nếu đã gắn bản sao checkpoint đáng tin cậy,

@@ -15,11 +15,56 @@ CAMERAS = ('CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT',
 TEST_COUNT = 16_817
 IMAGE_COUNT = 1_134
 MAP_LAYERS = (2, 15, 30)
+TEST_FILENAME = 'multi_frame_test.json'
+HF_DATASET = 'minhdang0901/drivelm-nuscenes-v1-0'
+HF_REVISION = '6c4336a5279eaba3f3dfc5b525cc6ba57d55d61a'
+HF_TEST_PATH = f'multi_frame/{TEST_FILENAME}'
 
 _NUMBER = r'-?\d+(?:\.\d+)?'
 _TAG = re.compile(rf'<c\d+,\s*(CAM_[A-Z_]+),\s*({_NUMBER}),\s*({_NUMBER})\s*>', re.I)
 _DIRECTION = r'(?:front|back)(?: (?:left|right))?'
 _PROSE = re.compile(rf'\b(?:to the ({_DIRECTION}) of the ego car|(front) view)\b', re.I)
+
+
+def resolve_inputs(image_root, test_file=None, *, needs_test=False, input_root=Path('/kaggle/input')):
+    """Use explicit paths or find a unique DriveLM test file and image tree in Kaggle Input."""
+    image_root = Path(image_root) if image_root is not None else None
+    test_file = Path(test_file) if test_file is not None else None
+    if image_root is not None and not (image_root / 'nuscenes' / 'samples').is_dir():
+        raise ValueError(f'Image root {image_root} must contain nuscenes/samples. Check DATA_DIR or --image-root.')
+    if test_file is not None and not test_file.is_file():
+        raise ValueError(f'Test file does not exist: {test_file}. Check TEST_JSON or --test.')
+
+    if needs_test and test_file is None and image_root is not None:
+        local_test = image_root / 'multi_frame' / TEST_FILENAME
+        if local_test.is_file():
+            test_file = local_test
+    if image_root is not None and (not needs_test or test_file is not None):
+        return image_root, test_file
+
+    image_candidates, test_candidates = set(), set()
+    for directory, children, files in os.walk(input_root):
+        folder = Path(directory)
+        if folder.name == 'nuscenes' and 'samples' in children:
+            image_candidates.add(folder.parent.resolve())
+            children.remove('samples')
+        if needs_test and TEST_FILENAME in files:
+            test_candidates.add((folder / TEST_FILENAME).resolve())
+
+    def unique(paths, description, override):
+        if not paths:
+            raise ValueError(f'No {description} found under {input_root}. Attach the dataset as Kaggle Input '
+                             f'or set {override} to its mounted path.')
+        if len(paths) > 1:
+            choices = '\n  '.join(str(path) for path in sorted(paths))
+            raise ValueError(f'Multiple paths for {description}. Set {override} to select one:\n  {choices}')
+        return next(iter(paths))
+
+    if needs_test and test_file is None:
+        test_file = unique(test_candidates, TEST_FILENAME, 'TEST_JSON or --test')
+    if image_root is None:
+        image_root = unique(image_candidates, 'directory containing nuscenes/samples', 'DATA_DIR or --image-root')
+    return image_root, test_file
 
 
 @contextmanager
@@ -75,13 +120,37 @@ def _relative_image(value, camera):
     return relative.as_posix()
 
 
+def _test_records(payload):
+    records = json.loads(payload)
+    if not isinstance(records, list) or len(records) != TEST_COUNT:
+        raise ValueError(f'Expected all {TEST_COUNT:,} test questions')
+    return records
+
+
+def fetch_hf_test(output):
+    """Download only the pinned test JSON and images that it references."""
+    from functools import partial
+
+    from huggingface_hub import hf_hub_download
+    from tqdm.contrib.concurrent import thread_map
+
+    download = partial(hf_hub_download, HF_DATASET, repo_type='dataset',
+                       revision=HF_REVISION, local_dir=output, token=False)
+    test_file = Path(download(HF_TEST_PATH))
+    records = _test_records(test_file.read_bytes())
+    images = sorted({_relative_image(views[camera], camera)
+                     for _, views in records for camera in CAMERAS})
+    if len(images) != IMAGE_COUNT:
+        raise ValueError(f'Expected {IMAGE_COUNT:,} distinct test images, found {len(images):,}')
+    thread_map(download, images, max_workers=8, desc='Hugging Face test images', unit='image')
+    return test_file
+
+
 def prepare_manifest(test_file, image_root, destination, *, example_id=None):
     from PIL import Image
 
     payload = Path(test_file).read_bytes()
-    records = json.loads(payload)
-    if not isinstance(records, list) or len(records) != TEST_COUNT:
-        raise ValueError(f'Expected all {TEST_COUNT:,} test questions')
+    records = _test_records(payload)
     root = Path(image_root)
     frames, rows, counts = {}, [], Counter()
     image_paths = set()
