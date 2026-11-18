@@ -70,3 +70,21 @@ def test_activate_source_removes_old_package_imports(tmp_path, monkeypatch):
         assert sys.path[0] == str(tmp_path.resolve())
     finally:
         sys.path[:] = previous
+
+
+def test_dino_worker_guard_and_optional_activation(tmp_path,monkeypatch):
+    helper=_module()
+    module=ModuleType('dinov2_attention.runtime')
+    class Live:
+        def poll(self): return None
+    module._PROCESSES={0:Live()}
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    with pytest.raises(RuntimeError,match='worker'):
+        helper.ensure_no_workers([])
+    module._PROCESSES={}
+    previous=list(sys.path)
+    try:
+        helper.activate_source(tmp_path,packages=('dinov2_attention',))
+        assert module.__name__ not in sys.modules
+    finally:
+        sys.path[:]=previous

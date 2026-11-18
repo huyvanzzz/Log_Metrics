@@ -23,3 +23,4 @@ Thumbs.db
 inference_outputs/
 attention_outputs/
 generated_attention_outputs/
+dinov2_attention_outputs/

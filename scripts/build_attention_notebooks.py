@@ -29,7 +29,8 @@ def setup_cell(generated=False):
     tail = textwrap.dedent('''\
 
         ensure_no_workers([Path('/kaggle/working/attention_outputs'),
-                           Path('/kaggle/working/generated_attention_outputs')])
+                           Path('/kaggle/working/generated_attention_outputs'),
+                           Path('/kaggle/working/dinov2_attention_outputs')])
         identity = sync_source(SOURCE_REPOSITORY, SOURCE_BRANCH, SOURCE)
         SOURCE_COMMIT = identity["commit"]
         SOURCE_ARCHIVE_SHA256 = identity["sha256"]

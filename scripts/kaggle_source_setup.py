@@ -12,7 +12,7 @@ import zipfile
 
 
 def ensure_no_workers(output_roots):
-    for name in ('smolvlm_attention.runtime', 'smolvlm_attention.generated_runtime'):
+    for name in ('smolvlm_attention.runtime', 'smolvlm_attention.generated_runtime', 'dinov2_attention.runtime'):
         module = sys.modules.get(name)
         if module is not None and any(process.poll() is None for process in getattr(module, '_PROCESSES', {}).values()):
             raise RuntimeError('A measurement worker is still running. Wait for it to finish before pulling source.')
@@ -26,7 +26,7 @@ def ensure_no_workers(output_roots):
             raise RuntimeError(f'A measurement worker PID {pid} may still be running ({path}). Finish it before pulling.')
 
 
-def sync_source(repository, branch, directory):
+def sync_source(repository, branch, directory, packages=('smolvlm_inference', 'smolvlm_attention')):
     directory = Path(directory).resolve()
     def git(*args):
         return subprocess.check_output(['git', '-C', str(directory), *args], text=True).strip()
@@ -47,7 +47,7 @@ def sync_source(repository, branch, directory):
     # Keep the historical source_archive_sha256 field reproducible without embedding stale source.
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-        for package in ('smolvlm_inference', 'smolvlm_attention'):
+        for package in packages:
             folder = directory / package
             if not folder.is_dir():
                 raise RuntimeError(f'Missing source package after pull: {package}')
@@ -59,14 +59,14 @@ def sync_source(repository, branch, directory):
     return dict(commit=git('rev-parse', 'HEAD'), sha256=hashlib.sha256(buffer.getvalue()).hexdigest())
 
 
-def activate_source(directory):
+def activate_source(directory, packages=('smolvlm_inference', 'smolvlm_attention')):
     directory = Path(directory).resolve()
-    for package in ('smolvlm_inference', 'smolvlm_attention'):
+    for package in packages:
         for path in (directory / package).glob('*.py'):
             Path(importlib.util.cache_from_source(str(path))).unlink(missing_ok=True)
     for name in list(sys.modules):
         if any(name == package or name.startswith(package + '.')
-               for package in ('smolvlm_inference', 'smolvlm_attention')):
+               for package in packages):
             del sys.modules[name]
     sys.path[:] = [str(directory)] + [entry for entry in sys.path if entry != str(directory)]
     importlib.invalidate_caches()
