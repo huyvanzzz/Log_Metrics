@@ -1,0 +1,219 @@
+"""Prepare the paired test subset and persist Kaggle generations by variant and frame."""
+
+from collections import Counter
+from dataclasses import asdict
+from hashlib import sha256
+import json
+import logging
+from pathlib import Path
+
+from smolvlm_attention.mvpruner_ablation.data import (
+    CAMERAS, TEST_COUNT, _relative_image, atomic_output, file_sha256, write_json,
+)
+
+from .design import MERGE_SEEDS, RANK_LAYERS, SEED, VARIANTS, merge_positions, select_indices, yes_no
+
+
+def prepare(test_file, image_root, output, count):
+    from tqdm.auto import tqdm
+
+    payload = Path(test_file).read_bytes()
+    records = json.loads(payload)
+    if len(records) != TEST_COUNT:
+        raise ValueError(f'Expected {TEST_COUNT} questions in the input split')
+    frames = {}
+    for index in select_indices(records, count):
+        qa, images = records[index]
+        paths = [_relative_image(images[camera], camera) for camera in CAMERAS]
+        frame_id = sha256('\n'.join(paths).encode()).hexdigest()
+        frame = frames.setdefault(frame_id, dict(paths=paths, rows=[]))
+        frame['rows'].append(dict(id=index, question=qa['Q'], answer=qa['A'],
+                                  question_type=qa['question_type'], yes_no=yes_no(qa['A'])))
+    all_paths = sorted({path for frame in frames.values() for path in frame['paths']})
+    assets = {path: dict(sha256=file_sha256(Path(image_root) / path))
+              for path in tqdm(all_paths, desc='Hash test images', unit='image')}
+    positions = merge_positions()
+    variants = [dict(asdict(v), layers=list(v.layers)) for v in VARIANTS]
+    manifest = dict(version=1, seed=SEED, samples=count, test_sha256=sha256(payload).hexdigest(),
+                    frames=frames, assets=assets, variants=variants,
+                    merge={str(seed): positions[seed] for seed in MERGE_SEEDS})
+    destination = output / 'manifest.json'
+    if destination.exists():
+        if json.loads(destination.read_bytes()) != manifest:
+            raise ValueError('An output manifest already exists for different inputs; choose a new output directory')
+    else:
+        write_json(destination, manifest)
+    types = Counter(row['question_type'] for frame in frames.values() for row in frame['rows'])
+    print(f'{count:,} questions · {len(frames)} six-camera frames · {dict(types)}')
+    for seed, entry in positions.items():
+        print(f'Merge seed {seed}: {CAMERAS[entry["camera"]]}, patch row {entry["row"] + 1}, col {entry["col"] + 1}')
+
+
+def _logger(output, variant):
+    folder = output / 'logs'
+    folder.mkdir(parents=True, exist_ok=True)
+    logger = logging.Logger(variant)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    for handler in (logging.StreamHandler(), logging.FileHandler(folder / f'{variant}.log', encoding='utf-8')):
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
+
+
+def _load_frame(path, rows):
+    data = json.loads(path.read_bytes())
+    if [entry['id'] for entry in data] != [row['id'] for row in rows]:
+        raise ValueError(f'Invalid saved prediction IDs in {path}')
+    return data
+
+
+def _code_identity():
+    package = Path(__file__).resolve().parent
+    code = [package / name for name in ('design.py', 'decoder.py', 'runtime.py')]
+    code += [package.parent / 'mvpruner_ablation' / name for name in ('collector.py', 'runtime.py')]
+    code += [package.parents[1] / 'smolvlm_inference' / name for name in ('model.py', 'text.py')]
+    return sha256(''.join(file_sha256(path) for path in code).encode()).hexdigest()
+
+
+def _bind(path, identity):
+    if path.exists():
+        if json.loads(path.read_bytes()) != identity:
+            raise ValueError('Checkpoint, data, decoding settings or measurement code changed; use a new output directory')
+    else:
+        write_json(path, identity)
+
+
+def _projected(model, output, frame_id, frame, manifest, image_root):
+    import numpy as np
+    import torch
+
+    from smolvlm_attention.mvpruner_ablation.runtime import frame_features
+
+    path = output / 'projected' / f'{frame_id}.npy'
+    if path.exists():
+        return torch.from_numpy(np.load(path, allow_pickle=False)).to(next(model.parameters()).device)
+    with torch.inference_mode():
+        raw = frame_features(model, frame['paths'], manifest['assets'], image_root)
+        projected = model._project(raw.unsqueeze(0), 1)
+    with atomic_output(path) as stream:
+        np.save(stream, projected.cpu().numpy(), allow_pickle=False)
+    return projected
+
+
+def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file, recipient, batch_size, logger):
+    import numpy as np
+    import torch
+
+    encoded = [encoder.encode(row['question']) for row in rows]
+    rank_layers = [layer for layer in RANK_LAYERS if layer <= len(decoder.text.layers)]
+    rank_parts = {layer: [] for layer in rank_layers}
+    ranking = {}
+    if variant.mode in ('top10', 'keep10', 'bottom10', 'keep5'):
+        with np.load(rank_file, allow_pickle=False) as saved:
+            if not np.array_equal(saved['ids'], [row['id'] for row in rows]):
+                raise ValueError(f'Mismatched baseline rankings in {rank_file}')
+            ranking = {layer: torch.from_numpy(saved[str(layer)]).to(decoder.device, dtype=torch.long)
+                       for layer in variant.layers}
+    results, start = [], 0
+    while start < len(rows):
+        stop = min(len(rows), start + batch_size)
+        try:
+            tokens, ranks, mass, truncated = decoder.generate(
+                encoded[start:stop], projected, variant, limit,
+                rankings={layer: order[start:stop] for layer, order in ranking.items()} or None,
+                recipient=recipient,
+            )
+        except torch.cuda.OutOfMemoryError:
+            if batch_size == 1:
+                raise
+        else:
+            for layer, order in ranks.items():
+                rank_parts[layer].append(order.numpy().astype(np.uint16))
+            predictions = encoder.tokenizer.batch_decode(tokens, skip_special_tokens=True)
+            for row, prediction, stats, cutoff in zip(rows[start:stop], predictions, mass.tolist(), truncated.tolist()):
+                results.append(dict(id=row['id'], prediction=prediction.strip(), truncated=cutoff,
+                                    removed_mass=stats[0], visual_mass=stats[1],
+                                    fallback_rows=int(stats[2]), attention_rows=int(stats[3])))
+            start = stop
+            continue
+        torch.cuda.empty_cache()
+        batch_size = max(1, batch_size // 2)
+        logger.warning('CUDA OOM. Retrying the same questions with batch size %s', batch_size)
+    if variant.mode == 'baseline':
+        with atomic_output(rank_file) as stream:
+            np.savez_compressed(stream, ids=[row['id'] for row in rows],
+                                **{str(layer): np.concatenate(parts) for layer, parts in rank_parts.items()})
+    return results, batch_size
+
+
+def run(output, image_root, variant, *, batch_size, limit, checkpoint):
+    from filelock import FileLock
+    from huggingface_hub import hf_hub_download
+    import torch
+    import transformers
+    from tqdm.auto import tqdm
+
+    from smolvlm_attention.config import MODELS
+    from smolvlm_attention.mvpruner_ablation.collector import QuestionBatch
+    from smolvlm_inference.model import CAMERA_ORDER, load_model
+    from .decoder import Decoder
+
+    if transformers.__version__ != '4.46.3' or not torch.cuda.is_available():
+        raise RuntimeError('Use a Kaggle GPU with Transformers 4.46.3')
+    if batch_size < 1 or limit < 1:
+        raise ValueError('Batch size and generation limit must be positive')
+    manifest_path = output / 'manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    logger = _logger(output, variant.name)
+    spec = MODELS['base']
+    with FileLock(str(output / 'run.lock'), timeout=0):
+        if variant.mode != 'baseline' and not (output / 'predictions/baseline/complete.json').is_file():
+            raise ValueError('Finish the baseline before starting the intervention cells')
+        if checkpoint is None:
+            checkpoint = hf_hub_download(repo_id=spec['repo'], revision=spec['revision'],
+                                         filename='finetune_best.pt')
+        identity = dict(manifest=file_sha256(manifest_path), checkpoint=file_sha256(checkpoint),
+                        code=_code_identity(), torch=str(torch.__version__), gpu=torch.cuda.get_device_name(),
+                        generation='greedy', max_new_tokens=limit)
+        _bind(output / 'run.json', identity)
+        directory = output / 'predictions' / variant.name
+        frames = manifest['frames']
+        pending, done = [], 0
+        for frame_id, frame in frames.items():
+            path = directory / f'{frame_id}.json'
+            if path.is_file():
+                done += len(_load_frame(path, frame['rows']))
+            else:
+                pending.append((frame_id, frame))
+        total = manifest['samples']
+        number = VARIANTS.index(variant) + 1
+        logger.info('Experiment %s/%s | %s | %s/%s questions already measured',
+                    number, len(VARIANTS), variant.name, done, total)
+        if pending:
+            torch.set_float32_matmul_precision('highest')
+            torch.backends.cudnn.allow_tf32 = False
+            model = load_model(checkpoint, device='cuda:0', expected_prompt_camera_order=CAMERA_ORDER)
+            if len(model.native.model.text_model.layers) != 30 or model.visual_token_len != 384:
+                raise ValueError('The experiment expects 30 decoder layers and 384 image tokens')
+            encoder = QuestionBatch(model)
+            decoder = Decoder(model, encoder)
+            recipient = manifest['merge'][str(variant.seed)]['token'] if variant.seed is not None else None
+            with tqdm(total=total, initial=done, desc=variant.name, unit='question') as bar:
+                for index, (frame_id, frame) in enumerate(pending):
+                    projected = _projected(model, output, frame_id, frame, manifest, image_root)
+                    if index == 0 and variant.mode == 'baseline':
+                        probes = [encoder.encode(row['question']) for row in frame['rows'][:2]]
+                        decoder.verify_native(probes, projected, variant)
+                        logger.info('Baseline greedy-token parity with native SmolVLM passed')
+                    results, batch_size = _measure_frame(
+                        decoder, encoder, frame['rows'], projected, variant, limit,
+                        output / 'rankings' / f'{frame_id}.npz', recipient, batch_size, logger,
+                    )
+                    write_json(directory / f'{frame_id}.json', results)
+                    done += len(results)
+                    bar.update(len(results))
+                    logger.info('%s/%s questions | frame %s', done, total, frame_id[:12])
+        if done != total:
+            raise RuntimeError(f'Incomplete run: {done}/{total} questions')
+        write_json(directory / 'complete.json', dict(samples=done, variant=variant.name))
+        logger.info('Complete | %s/%s questions', done, total)
