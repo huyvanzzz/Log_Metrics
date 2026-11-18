@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoProcessor
 
 from smolvlm_inference.model import MODEL_ID, MODEL_REVISION, _configure_processor, _geometry, processor_policy
@@ -42,9 +43,9 @@ def resolve_artifacts(output_root, cache_input_dir=''):
 
 
 def prepare_run(artifacts, *, source_commit=None, source_archive_sha256=None):
+    from .generated_runtime import _cache_receipt
     output = Path(artifacts['output_root'])
-    descriptor = validate_cache(artifacts['cache_dir'], artifacts['prepared_dir'],
-                                output, expected_fingerprint=CACHE_FINGERPRINT)
+    descriptor = _cache_receipt(artifacts)
     reader = open_validated_cache(descriptor)
     config = AutoConfig.from_pretrained(MODEL_ID, revision=MODEL_REVISION, token=False)
     processor = AutoProcessor.from_pretrained(MODEL_ID, revision=MODEL_REVISION, token=False)
@@ -58,7 +59,7 @@ def prepare_run(artifacts, *, source_commit=None, source_archive_sha256=None):
         raise ValueError('Expected the complete pinned test set')
     for name, spec in artifacts['models'].items():
         spec['prepared_test'] = str(prepare_test(reader, processor, spec['camera_order'],
-            output / 'inputs' / name, config.text_config.max_position_embeddings).resolve())
+            output / 'inputs' / name, config.text_config.max_position_embeddings, progress=True).resolve())
     run = dict(artifacts, cache_descriptor=str(descriptor.resolve()),
                expected_test_count=TEST_COUNT, prepared_repo=PREPARED_REPO,
                prepared_revision=PREPARED_REVISION, source_commit=source_commit,
@@ -98,6 +99,9 @@ def launch_worker(config_path, model_name):
                        PYTHONUNBUFFERED='1')
     source = str(Path(__file__).resolve().parents[1])
     environment['PYTHONPATH'] = source + os.pathsep + environment.get('PYTHONPATH', '')
+    from .data import _json_write
+    _json_write(logs / f'{model_name}.status.json', dict(status='starting', stage='starting',
+        processed=0, total=config.get('expected_test_count', TEST_COUNT), model=model_name))
     with (logs / f'{model_name}.log').open('a', encoding='utf-8') as log:
         kwargs = {'start_new_session': True} if os.name != 'nt' else {'creationflags': subprocess.CREATE_NO_WINDOW}
         process = subprocess.Popen([sys.executable, '-m', 'smolvlm_attention.worker',
@@ -114,30 +118,43 @@ def wait_workers(config_path):
     processes = {name: _PROCESSES.get((str(path), name)) for name in MODELS}
     if any(p is None for p in processes.values()):
         raise RuntimeError('Launch both model cells before waiting')
+    config = json.loads(path.read_text(encoding='utf-8'))
+    logs = Path(config['output_root']) / 'logs'
+    count = config['expected_test_count']
+    bars = {name: tqdm(total=count, desc=name, unit='question', position=i)
+            for i, name in enumerate(processes)}
+    total = tqdm(total=count * len(processes), desc='Total', unit='question', position=len(bars))
     try:
-        while any(p.poll() is None for p in processes.values()):
-            failed = {name: p.returncode for name, p in processes.items()
-                      if p.poll() is not None and p.returncode != 0}
-            if failed:
-                raise RuntimeError(f'Worker failed: {failed}. Read the model log before retrying.')
-            config = json.loads(path.read_text(encoding='utf-8'))
-            for name in processes:
-                log = Path(config['output_root']) / 'logs' / f'{name}.jsonl'
-                if log.exists():
-                    with log.open(encoding='utf-8') as stream:
-                        last = None
-                        for line in stream:
-                            if line.strip():
-                                last = line.strip()
-                    if last:
-                        print(last, flush=True)
-            time.sleep(10)
-        failed = {name: p.returncode for name, p in processes.items() if p.returncode != 0}
-        if failed:
-            raise RuntimeError(f'Worker failed: {failed}; inspect logs/')
+        while True:
+            processed = 0
+            finished = True
+            for name, process in processes.items():
+                code = process.poll()
+                finished = finished and code is not None
+                state_path = logs / f'{name}.status.json'
+                state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else dict(
+                    status='starting', stage='starting', processed=0)
+                bar = bars[name]
+                bar.update(state['processed'] - bar.n)
+                label = state['stage']
+                if 'batch_size' in state:
+                    label += f", batch={state['batch_size']}"
+                bar.set_postfix_str(label, refresh=False)
+                processed += state['processed']
+                if state['status'] == 'failed' or (code is not None and code != 0):
+                    raise RuntimeError(f'{name} failed: {state.get("error", code)}. Read {logs / (name + ".log")}')
+                if code == 0 and state['status'] != 'complete':
+                    raise RuntimeError(f'{name} exited without completion status. Read {logs / (name + ".log")}')
+            total.update(processed - total.n)
+            if finished:
+                break
+            time.sleep(1)
     except KeyboardInterrupt:
         print('Workers keep running; rerun this wait cell to reconnect.', flush=True)
         raise
+    finally:
+        for bar in list(bars.values()) + [total]:
+            bar.close()
     print('Both model workers completed.')
 
 

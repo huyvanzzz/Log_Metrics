@@ -182,14 +182,6 @@ def test_generated_notebook_is_standalone_and_each_plot_has_own_cell():
     assert len([c for c in cells if 'histogram_files = plot_generated_histogram(' in c]) == 1
     for cell in cells:
         ast.parse(cell)
-    values = {s.targets[0].id:s.value.value for s in ast.parse(cells[0]).body
-              if isinstance(s,ast.Assign) and isinstance(s.targets[0],ast.Name) and isinstance(s.value,ast.Constant)}
-    payload = base64.b64decode(values['SOURCE_B64'])
-    assert hashlib.sha256(payload).hexdigest() == values['SOURCE_ARCHIVE_SHA256']
-    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-        expected = {p.as_posix() for package in ('smolvlm_inference','smolvlm_attention')
-                    for p in Path(package).iterdir() if p.suffix in ('.py','.txt')}
-        assert set(archive.namelist()) == expected
-        for name in expected:
-            assert archive.read(name) == Path(name).read_bytes()
+    assert 'identity = sync_source(' in cells[0]
+    assert 'SOURCE_ARCHIVE_SHA256 = identity["sha256"]' in cells[0]
     assert all(c['execution_count'] is None and not c['outputs'] for c in nb['cells'] if c['cell_type']=='code')

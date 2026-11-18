@@ -1,8 +1,11 @@
 # Generated-token attention on Kaggle
 
 Upload `notebooks/kaggle_smolvlm_generated_attention.ipynb`, enable Internet and a GPU
-(one GPU or T4 ×2), attach `huyhuy12334/cache-smolvlm`, then Run All. No source checkout
-or manual checkpoint download is required. Only `huyvanzzz/smolvlm256M_base` is loaded,
+(one GPU or T4 ×2), attach `huyhuy12334/cache-smolvlm`, then Run All. Cell 1 clones
+the entire `huyvanzzz/Log_Metrics` repository, or runs `git pull --ff-only` when the
+checkout already exists. Push local changes first. `SOURCE_BRANCH` defaults to
+`smolvlm-attention`; change it if you push to another branch. Dependencies and
+checkpoints are downloaded automatically. Only `huyvanzzz/smolvlm256M_base` is loaded,
 at the checkpoint revision pinned in `smolvlm_attention/config.py`.
 
 The notebook selects 1,000 test **questions**, not unique scenes, without replacement.
@@ -57,20 +60,29 @@ Samples are saved atomically after successful measurement; completed
 IDs are not measured again. A new Kaggle session must retain or restore these files
 and the referenced inputs. For a changed experiment, choose a new output directory.
 
-The notebook embeds both source packages. After editing either package, run:
+Both notebooks use `/kaggle/working/visualize-github-source`, while outputs stay
+outside that checkout. After pushing code, rerun cell 1 to update all source and
+clear old package imports. Finish workers first; setup refuses active workers or
+tracked local checkout edits. To redraw saved results, run **cell 1, then cells
+6–9 only**, keeping the original run config and results. Do not rerun preparation
+just to update plots, because a changed source fingerprint rejects old measurements.
+
+Notebook setup is maintained in `scripts/kaggle_source_setup.py`. After changing
+that setup helper or notebook templates, rebuild both notebooks with:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/build_generated_attention_notebook.py
+.\.venv\Scripts\python.exe scripts/build_attention_notebooks.py
 ```
 
-This also refreshes the source bundle in the earlier prompt-attention notebook,
-without changing its cells or measurement policy.
+Ordinary measurement/plotting source changes need only a Git push and cell 1;
+they no longer require rebuilding or reuploading the notebook. The older builder
+entrypoint remains an alias for rebuilding both notebooks.
 
 Reference: [What's in the Image?](https://arxiv.org/html/2411.17491v1).
 Figure styling follows the supplied examples and the local `figures4papers` skill;
 the actual curves and ranges are determined by SmolVLM measurements.
 
 CPU fixtures verify attention against native eager and KV-cache decode, aggregation,
-resume, OOM handling, exports and embedded-source consistency. Full checkpoint
+resume, OOM handling, exports and first-cell Git update behavior. Full checkpoint
 generation and Kaggle throughput require a real GPU run and are not claimed from
 local CPU tests.

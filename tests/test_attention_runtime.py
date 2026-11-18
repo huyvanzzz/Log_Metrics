@@ -10,22 +10,18 @@ import numpy as np
 import pytest
 
 
-def test_notebook_bundles_exact_current_source():
-    nb = json.loads(Path('notebooks/kaggle_smolvlm_attention_distribution.ipynb').read_text(encoding='utf-8'))
+@pytest.mark.parametrize('filename', ['kaggle_smolvlm_attention_distribution.ipynb',
+                                    'kaggle_smolvlm_generated_attention.ipynb'])
+def test_notebook_pulls_entire_source_before_importing_models(filename):
+    nb = json.loads((Path('notebooks') / filename).read_text(encoding='utf-8'))
     code = next(''.join(c['source']) for c in nb['cells'] if c['cell_type'] == 'code')
-    assignments = {}
-    for statement in ast.parse(code).body:
-        if (isinstance(statement, ast.Assign) and isinstance(statement.targets[0], ast.Name)
-                and isinstance(statement.value, ast.Constant)):
-            assignments[statement.targets[0].id] = statement.value.value
-    payload = base64.b64decode(assignments['SOURCE_B64'])
-    assert hashlib.sha256(payload).hexdigest() == assignments['SOURCE_ARCHIVE_SHA256']
-    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-        expected = {p.as_posix() for package in ['smolvlm_inference', 'smolvlm_attention']
-                    for p in Path(package).iterdir() if p.suffix in ('.py', '.txt')}
-        assert set(archive.namelist()) == expected
-        for name in archive.namelist():
-            assert archive.read(name) == Path(name).read_bytes(), f'Rebuild notebook bundle after editing {name}'
+    ast.parse(code)
+    assert Path('scripts/kaggle_source_setup.py').read_text(encoding='utf-8').strip() in code
+    assert 'SOURCE_B64' not in code
+    assert 'SOURCE_BRANCH = "smolvlm-attention"' in code
+    assert "'pull', '--ff-only'" in code and "'clone'" in code
+    assert code.index('identity = sync_source(') < code.index("'-m', 'pip'")
+    assert code.index('activate_source(SOURCE)') < code.index('import torch, transformers')
 
 
 def test_launch_is_nonblocking_and_duplicate_launch_reuses_worker(tmp_path, monkeypatch):

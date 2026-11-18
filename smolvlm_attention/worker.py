@@ -105,8 +105,14 @@ def run_worker(config_path, model_name):
     log_path = root / 'logs' / f'{model_name}.jsonl'
     log_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.time()
+    live = dict(status='running', stage='starting', processed=0,
+                total=config['expected_test_count'], model=model_name)
     def progress(event):
         event = dict(event, elapsed_seconds=round(time.time() - start, 2), model=model_name)
+        live.update(event)
+        if event['event'] in ('failed', 'complete'):
+            live.update(status=event['event'], stage=event['event'])
+        _write_json(root / 'logs' / f'{model_name}.status.json', live)
         with log_path.open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(event) + '\n')
         if event['event'] != 'batch' or event['processed'] % 100 == 0:
@@ -114,6 +120,7 @@ def run_worker(config_path, model_name):
     status = output / 'metadata.json'
     _write_json(status, dict(status='running', model=model_name))
     try:
+        progress(dict(event='starting'))
         if transformers.__version__ != '4.46.3':
             raise RuntimeError('Transformers 4.46.3 is required')
         if not torch.cuda.is_available():
@@ -126,6 +133,7 @@ def run_worker(config_path, model_name):
         reader = open_validated_cache(config['cache_descriptor'])
         prepared = load_prepared_test(spec['prepared_test'])
         rows = prepared['records']
+        progress(dict(event='loading_model', stage='loading_model'))
         model = load_model(spec['checkpoint'], device=device,
                            expected_prompt_camera_order=spec['camera_order'])
         identity = dict(backend='smolvlm_no_pruner', version=1, model_id=model.model_id,
@@ -150,6 +158,7 @@ def run_worker(config_path, model_name):
         def measure(selected):
             return collect_last_query_attention(model, batch_on_device(selected))
         # Full native attentions are only retained for single-sample preflight checks.
+        progress(dict(event='native_parity', stage='native_parity'))
         for row in sorted(rows, key=lambda r: len(r['input_ids']))[:2]:
             batch = batch_on_device([row])
             actual = collect_last_query_attention(model, batch)
@@ -171,8 +180,9 @@ def run_worker(config_path, model_name):
         state = output / 'attention.npz'
         accumulator = (AttentionAccumulator.load(state, shape, fingerprint, ids)
                        if state.exists() else AttentionAccumulator(shape, fingerprint, ids))
-        batch_size = tune_batch(rows, measure, device) if accumulator.pending_ids else 1
-        progress(dict(event='batch_selected', batch_size=batch_size, processed=accumulator.count))
+        batch_size = 16
+        progress(dict(event='batch_selected', stage='measuring', batch_size=batch_size,
+                      processed=accumulator.count))
         final_batch = process_pending(rows, accumulator, measure, batch_size=batch_size,
             device=device, checkpoint=state, progress=progress)
         if accumulator.count != len(ids) or accumulator.pending_ids:
@@ -184,7 +194,7 @@ def run_worker(config_path, model_name):
             prepared_repo=config['prepared_repo'], prepared_revision=config['prepared_revision'],
             python=platform.python_version(), torch=torch.__version__,
             gpu=torch.cuda.get_device_name(device), physical_gpu=spec['gpu'],
-            final_batch_size=final_batch, elapsed_seconds=round(time.time()-start, 2),
+            requested_batch_size=16, final_batch_size=final_batch, elapsed_seconds=round(time.time()-start, 2),
             peak_vram_bytes=torch.cuda.max_memory_reserved(device),
             histogram_population='384 head-and-sample-averaged visual positions per layer')
         _write_json(status, metadata)

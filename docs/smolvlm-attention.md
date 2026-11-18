@@ -2,9 +2,12 @@
 
 Upload `notebooks/kaggle_smolvlm_attention_distribution.ipynb` to Kaggle. Enable
 Internet and **two GPUs** (for example T4 x2); attach
-`huyhuy12334/cache-smolvlm` version 1 as Input. Run All. The notebook bundles the
-measurement source and pins both HF best checkpoints and prepared data; it does
-not require publishing local changes to GitHub or cloning figures4papers in Kaggle.
+`huyhuy12334/cache-smolvlm` version 1 as Input. Push code changes to GitHub first,
+then Run All. Cell 1 clones the entire `huyvanzzz/Log_Metrics` repository or runs
+`git pull --ff-only` in an existing checkout, installs dependencies and activates
+the updated source. Its default branch is `smolvlm-attention`; edit `SOURCE_BRANCH`
+only if you push to another branch. Both HF best checkpoints and prepared data
+remain pinned. The checkout is `/kaggle/working/visualize-github-source`.
 Keep Kaggle's CUDA Torch. If Transformers was already imported before installing
 the pinned dependencies, restart the kernel and Run All.
 
@@ -12,8 +15,10 @@ Base launches on physical GPU 0 and reverse on GPU 1. Both launch cells return
 immediately; the next cell waits and shows progress. Workers read the same cache
 without copying it and independently run the entire test set. Inspect
 `attention_outputs/logs/base.log` or `reverse.log` on failure. Each worker verifies
-native attention parity first, selects an FP32 batch size on long prompts, and
-reduces it on CUDA OOM without skipping samples. A snapshot saved every 100
+native attention parity first, starts at batch **16 per GPU**, and
+halves it only on CUDA OOM without skipping samples. There is no batch autotuning.
+tqdm shows cache bytes, prepared questions, each model and combined progress.
+A snapshot saved every 100
 successful batches resumes only when source, artifacts and sample IDs match.
 Interrupting the wait cell leaves workers running; rerun that cell to reconnect.
 Do not rerun the setup/data cells while workers are active.
@@ -48,10 +53,13 @@ across all layers and both models. Attention values remain raw probabilities.
 Zero has no bar and is shown as gray in spatial maps. Histogram attention bins
 remain linear; only histogram counts use logarithmic colors.
 
-To redraw an existing Kaggle run, update `smolvlm_attention/plotting.py` in the
-actual source folder, reload that module with `importlib.reload`, then rerun
-cells 7–14. Preserve the original `RUN_CONFIG` and output files; do not rerun
-bootstrap or measurement cells merely to change figure scales.
+To redraw an existing Kaggle run, push changes, run cell 1 to pull the whole
+repository, then cells 7–14 only. Cell 1 restores the path to the saved `RUN_CONFIG`,
+and plotting reloads that configuration independently of preparation cells.
+Outputs stay outside the Git checkout. Do not rerun data preparation or measurement
+merely to change figure scales: a changed source fingerprint would reject old
+measurement snapshots. Finish all workers before updating source. Setup refuses
+active workers and modified tracked checkout files rather than overwriting them.
 
 Local verification: `python -m pytest -q tests backend/test_parser.py` after
 installing Torch, pytest and `smolvlm_attention/requirements.txt` in a virtual

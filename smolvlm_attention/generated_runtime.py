@@ -345,20 +345,27 @@ def wait_generated_workers(config_path):
     try:
         while True:
             processed = 0
+            finished = True
             for shard, (process, bar) in enumerate(zip(processes, bars)):
+                code = process.poll()
+                finished = finished and code is not None
                 status_path = Path(run['output_root']) / 'logs' / f'shard_{shard}.json'
                 status = json.loads(status_path.read_text(encoding='utf-8'))
                 if status['fingerprint'] != run['fingerprint']:
                     raise ValueError('Progress status belongs to another run')
                 count = status['processed']
                 bar.update(count - bar.n)
-                bar.set_postfix_str(status['stage'], refresh=False)
+                label = status['stage']
+                if 'batch_size' in status:
+                    label += f", batch={status['batch_size']}"
+                bar.set_postfix_str(label, refresh=False)
                 processed += count
-                code = process.poll()
                 if status['status'] == 'failed' or (code is not None and code != 0):
                     raise RuntimeError(f'Shard {shard} failed: {status.get("error", code)}. Read {status_path.with_suffix(".log")}')
+                if code == 0 and status['status'] != 'complete':
+                    raise RuntimeError(f'Shard {shard} exited without completion status. Read {status_path.with_suffix(".log")}')
             total.update(processed - total.n)
-            if all(process.poll() is not None for process in processes):
+            if finished:
                 break
             time.sleep(1)
     except KeyboardInterrupt:

@@ -82,7 +82,7 @@ def open_validated_cache(descriptor_path):
                            directory=directory, array=np.memmap(payload, mode='r', dtype=np.float16, shape=tuple(shape)))
 
 
-def prepare_test(reader, processor, prompt_camera_order, output_dir, max_length):
+def prepare_test(reader, processor, prompt_camera_order, output_dir, max_length, *, progress=False):
     from smolvlm_inference.text import CachedBatchCollator, chat_messages
     prompt_camera_order = _camera_order(prompt_camera_order)
     image_seq_len = reader.manifest['geometry']['visual_tokens_per_view']
@@ -91,7 +91,10 @@ def prepare_test(reader, processor, prompt_camera_order, output_dir, max_length)
     output, seen, eval_seen = [], set(), set()
     token = str(processor.image_token)
     image_id = processor.tokenizer.convert_tokens_to_ids(token)
-    for row in records(reader.prepared / 'test.jsonl'):
+    from tqdm.auto import tqdm
+    rows = records(reader.prepared / 'test.jsonl')
+    for row in tqdm(rows, total=reader.counts['test'], desc='Prepare test prompts',
+                    unit='question', disable=not progress):
         sample_id, eval_id = row['sample_id'], row['eval_id']
         if not isinstance(sample_id, str) or sample_id in seen or eval_id in eval_seen:
             raise ValueError('test sample IDs and eval IDs must be unique')
