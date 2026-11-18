@@ -14,6 +14,10 @@ from smolvlm_attention.mvpruner_ablation.data import (
 from .design import MERGE_SEEDS, RANK_LAYERS, SEED, VARIANTS, merge_positions, select_indices, yes_no
 
 
+# Source digest of runtime.py in the released single-GPU runner.
+_SINGLE_GPU_RUNTIME = 'dd6f4634e1a5857ee2e3b75095af984e88ff56cc1e5aa935ee53f413c9212ea3'
+
+
 def prepare(test_file, image_root, output, count):
     from tqdm.auto import tqdm
 
@@ -53,7 +57,7 @@ def _logger(output, variant):
     folder = output / 'logs'
     folder.mkdir(parents=True, exist_ok=True)
     logger = logging.Logger(variant)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    formatter = logging.Formatter('%(asctime)s %(levelname)s [%(name)s] %(message)s')
     for handler in (logging.StreamHandler(), logging.FileHandler(folder / f'{variant}.log', encoding='utf-8')):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
@@ -67,23 +71,30 @@ def _load_frame(path, rows):
     return data
 
 
-def _code_identity():
+def _code_identity(runtime_digest=None):
     package = Path(__file__).resolve().parent
     code = [package / name for name in ('design.py', 'decoder.py', 'runtime.py')]
     code += [package.parent / 'mvpruner_ablation' / name for name in ('collector.py', 'runtime.py')]
     code += [package.parents[1] / 'smolvlm_inference' / name for name in ('model.py', 'text.py')]
-    return sha256(''.join(file_sha256(path) for path in code).encode()).hexdigest()
+    digests = [runtime_digest if path == package / 'runtime.py' and runtime_digest else file_sha256(path)
+               for path in code]
+    return sha256(''.join(digests).encode()).hexdigest()
 
 
 def _bind(path, identity):
     if path.exists():
-        if json.loads(path.read_bytes()) != identity:
+        existing = json.loads(path.read_bytes())
+        # The parallel scheduler changes provenance only. The checkpoint, decoder code,
+        # input set and generation settings must still match the single-GPU run.
+        legacy = dict(identity, code=_code_identity(_SINGLE_GPU_RUNTIME))
+        if existing != identity and existing != legacy:
             raise ValueError('Checkpoint, data, decoding settings or measurement code changed; use a new output directory')
     else:
         write_json(path, identity)
 
 
 def _projected(model, output, frame_id, frame, manifest, image_root):
+    from filelock import FileLock
     import numpy as np
     import torch
 
@@ -92,11 +103,15 @@ def _projected(model, output, frame_id, frame, manifest, image_root):
     path = output / 'projected' / f'{frame_id}.npy'
     if path.exists():
         return torch.from_numpy(np.load(path, allow_pickle=False)).to(next(model.parameters()).device)
-    with torch.inference_mode():
-        raw = frame_features(model, frame['paths'], manifest['assets'], image_root)
-        projected = model._project(raw.unsqueeze(0), 1)
-    with atomic_output(path) as stream:
-        np.save(stream, projected.cpu().numpy(), allow_pickle=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path.with_suffix('.lock'))):
+        if path.exists():
+            return torch.from_numpy(np.load(path, allow_pickle=False)).to(next(model.parameters()).device)
+        with torch.inference_mode():
+            raw = frame_features(model, frame['paths'], manifest['assets'], image_root)
+            projected = model._project(raw.unsqueeze(0), 1)
+        with atomic_output(path) as stream:
+            np.save(stream, projected.cpu().numpy(), allow_pickle=False)
     return projected
 
 
@@ -146,7 +161,7 @@ def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file,
     return results, batch_size
 
 
-def run(output, image_root, variant, *, batch_size, limit, checkpoint):
+def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
     from filelock import FileLock
     from huggingface_hub import hf_hub_download
     import torch
@@ -162,20 +177,27 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint):
         raise RuntimeError('Use a Kaggle GPU with Transformers 4.46.3')
     if batch_size < 1 or limit < 1:
         raise ValueError('Batch size and generation limit must be positive')
+    if not 0 <= gpu < torch.cuda.device_count():
+        raise ValueError(f'GPU index {gpu} is unavailable')
+    device = torch.device(f'cuda:{gpu}')
+    torch.cuda.set_device(device)
     manifest_path = output / 'manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
     logger = _logger(output, variant.name)
     spec = MODELS['base']
-    with FileLock(str(output / 'run.lock'), timeout=0):
+    lock_folder = output / 'locks'
+    lock_folder.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(lock_folder / f'{variant.name}.lock'), timeout=0):
         if variant.mode != 'baseline' and not (output / 'predictions/baseline/complete.json').is_file():
             raise ValueError('Finish the baseline before starting the intervention cells')
         if checkpoint is None:
             checkpoint = hf_hub_download(repo_id=spec['repo'], revision=spec['revision'],
                                          filename='finetune_best.pt')
         identity = dict(manifest=file_sha256(manifest_path), checkpoint=file_sha256(checkpoint),
-                        code=_code_identity(), torch=str(torch.__version__), gpu=torch.cuda.get_device_name(),
+                        code=_code_identity(), torch=str(torch.__version__), gpu=torch.cuda.get_device_name(device),
                         generation='greedy', max_new_tokens=limit)
-        _bind(output / 'run.json', identity)
+        with FileLock(str(output / 'run.lock')):
+            _bind(output / 'run.json', identity)
         directory = output / 'predictions' / variant.name
         frames = manifest['frames']
         pending, done = [], 0
@@ -188,11 +210,11 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint):
         total = manifest['samples']
         number = VARIANTS.index(variant) + 1
         logger.info('Experiment %s/%s | %s | %s/%s questions already measured',
-                    number, len(VARIANTS), variant.name, done, total)
+                    number, len(VARIANTS), device, done, total)
         if pending:
             torch.set_float32_matmul_precision('highest')
             torch.backends.cudnn.allow_tf32 = False
-            model = load_model(checkpoint, device='cuda:0', expected_prompt_camera_order=CAMERA_ORDER)
+            model = load_model(checkpoint, device=device, expected_prompt_camera_order=CAMERA_ORDER)
             if len(model.native.model.text_model.layers) != 30 or model.visual_token_len != 384:
                 raise ValueError('The experiment expects 30 decoder layers and 384 image tokens')
             encoder = QuestionBatch(model)

@@ -6,7 +6,7 @@
 Cell cấu hình mặc định dùng nhánh `smolvlm-attention-nguyet`.
 
 1. `notebooks/kaggle_smolvlm_visipruner_ablation.ipynb` chạy lượt 01–12,
-   gồm baseline, toàn bộ shallow và nhóm middle 9–15. Bật một GPU và Internet.
+   gồm baseline, toàn bộ shallow và nhóm middle 9–15. Bật GPU và Internet.
    Giữ cùng `DATA_DIR` để dùng lại ảnh từ MVPruner nếu đã tải trong phiên.
    Có thể khai báo tên Kaggle Secret quyền Read ở `HF_TOKEN_SECRET`.
    Sau cell xác minh cuối, lưu output của notebook, bao gồm cả thư mục
@@ -22,8 +22,13 @@ Nếu chạy liền cả 23 cấu hình trong một phiên, dùng
 `notebooks/kaggle_smolvlm_visipruner_ablation_full.ipynb`. Bản full gồm chuẩn bị
 dữ liệu, đo, chấm điểm và xuất hình.
 
-Mỗi cấu hình có một đoạn Markdown và một lệnh chạy riêng. Baseline lưu thứ
-hạng token ảnh cho các lượt mask. Các biến thể sau có thể chạy lại riêng lẻ.
+Baseline chạy trên GPU 0 và lưu thứ hạng token ảnh cho các lượt mask. Sau
+baseline, mỗi cell mô tả tối đa hai biến thể. Trên T4 ×2, một biến thể chạy trên
+GPU 0 và biến thể kia chạy trên GPU 1. Trên một GPU, hai biến thể chạy tuần tự.
+Có thể chạy lại cell để tiếp tục từng biến thể từ bộ ảnh cuối đã lưu. Kết quả
+từ runner một GPU trước đây có thể dùng lại nếu checkpoint, dữ liệu, mã decoder,
+cấu hình sinh, phiên bản PyTorch và loại GPU vẫn khớp. Đợi cell đang chạy dừng
+trước khi cập nhật repo trong cùng phiên Kaggle.
 Mỗi lượt in số thứ tự trên 23, số câu đã xong và thanh tiến độ. Log được lưu
 trong `logs/<variant>.log`. Dự đoán được lưu từng bộ ảnh trong
 `predictions/<variant>/`. Cache đặc trưng đã qua connector nằm trong

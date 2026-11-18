@@ -10,16 +10,20 @@ from .design import BY_NAME, SAMPLE_COUNT
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('prepare', 'run', 'handoff', 'score', 'plot'):
+    for name in ('prepare', 'run', 'run-pair', 'handoff', 'score', 'plot'):
         command = commands.add_parser(name)
         command.add_argument('--output', type=Path, required=True)
-        if name in ('prepare', 'run'):
+        if name in ('prepare', 'run', 'run-pair'):
             command.add_argument('--image-root', type=Path, required=True)
         if name == 'prepare':
             command.add_argument('--test', type=Path, required=True)
             command.add_argument('--samples', type=int, default=SAMPLE_COUNT)
         if name == 'run':
             command.add_argument('--variant', choices=BY_NAME, required=True)
+            command.add_argument('--gpu', type=int, default=0)
+        if name == 'run-pair':
+            command.add_argument('--variants', choices=BY_NAME, nargs='+', required=True)
+        if name in ('run', 'run-pair'):
             command.add_argument('--batch-size', type=int, default=8)
             command.add_argument('--max-new-tokens', type=int, default=128)
             command.add_argument('--checkpoint', type=Path)
@@ -34,7 +38,12 @@ def main():
         from .runtime import run
 
         run(args.output, args.image_root, BY_NAME[args.variant], batch_size=args.batch_size,
-            limit=args.max_new_tokens, checkpoint=args.checkpoint)
+            limit=args.max_new_tokens, checkpoint=args.checkpoint, gpu=args.gpu)
+    elif args.command == 'run-pair':
+        from .launcher import run_pair
+
+        run_pair(args.variants, output=args.output, image_root=args.image_root,
+                 batch_size=args.batch_size, limit=args.max_new_tokens, checkpoint=args.checkpoint)
     elif args.command == 'handoff':
         from .handoff import handoff
 

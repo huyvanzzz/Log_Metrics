@@ -8,6 +8,7 @@ from smolvlm_attention.mvpruner_ablation.collector import QuestionBatch
 from smolvlm_attention.visipruner_ablation.decoder import Decoder, visual_weights
 from smolvlm_attention.visipruner_ablation.design import VARIANTS, Variant, merge_positions, select_indices
 from smolvlm_attention.visipruner_ablation.handoff import PART1, handoff
+from smolvlm_attention.visipruner_ablation import launcher, runtime
 from smolvlm_attention.mvpruner_ablation.data import file_sha256
 from smolvlm_inference.model import CachedSmolVLM
 from test_smolvlm_model import tiny_components
@@ -56,6 +57,44 @@ def test_part1_handoff_autodetects_completed_run_and_preserves_part2(tmp_path):
     write(output / 'run.json', dict(manifest='different'))
     with pytest.raises(ValueError, match='Existing Part 1 artifact differs'):
         handoff(output, source)
+
+
+@pytest.mark.parametrize('devices', [1, 2])
+def test_pair_launches_two_workers_only_when_two_gpus_are_available(monkeypatch, devices):
+    variants = ('shallow-top10', 'shallow-keep10')
+    launches = []
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: devices)
+
+    def record(command):
+        launches.append((command[command.index('--variant') + 1], command[-1]))
+
+    class Worker:
+        def __init__(self, command):
+            record(command)
+
+        def wait(self):
+            assert len(launches) == 2
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(launcher.subprocess, 'Popen', Worker)
+    monkeypatch.setattr(launcher.subprocess, 'run', lambda cmd, check: record(cmd))
+    launcher.run_pair(variants, output='out', image_root='images', batch_size=8, limit=128, checkpoint=None)
+    assert launches == [(variants[0], '0'), (variants[1], str(devices - 1))]
+
+
+def test_single_gpu_run_metadata_can_resume_with_pair_runner(tmp_path):
+    path = tmp_path / 'run.json'
+    current = dict(manifest='data', checkpoint='weights', gpu='Tesla T4',
+                   code=runtime._code_identity(), max_new_tokens=128)
+    legacy = dict(current, code=runtime._code_identity(runtime._SINGLE_GPU_RUNTIME))
+    path.write_text(json.dumps(legacy), encoding='utf-8')
+    runtime._bind(path, current)
+    assert json.loads(path.read_bytes()) == legacy
+    with pytest.raises(ValueError, match='measurement code changed'):
+        runtime._bind(path, dict(current, max_new_tokens=512))
 
 
 def test_mass_preserved_with_underflow_and_zero_visual_mass():
