@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "validation_status": "metadata_frozen_not_visually_verified",
+  "identity": {
+    "policy_version": "drivelm-attention-metadata-v1",
+    "seed": 42,
+    "sources": {
+      "original_qa.json": {
+        "repository": "minhdang0901/drivelm-nuscenes-v1-0",
+        "revision": "6c4336a5279eaba3f3dfc5b525cc6ba57d55d61a",
+        "file": "QA_dataset_nus/v1_0_train_nus.json",
+        "sha256": "e7348866761a76ca1595646f410615ddd5adffb7affd7e056a203da0bf85a8cd"
+      },
+      "original_test.json": {
+        "repository": "minhdang0901/drivelm-nuscenes-v1-0",
+        "revision": "6c4336a5279eaba3f3dfc5b525cc6ba57d55d61a",
+        "file": "multi_frame/multi_frame_test.json",
+        "sha256": "7ef5fbf8a390b4b4206cb62138358cd5179119f091fa9780d1fa513e886f546c"
+      },
+      "prepared_test.jsonl": {
+        "repository": "huyvanzzz/prepared_data",
+        "revision": "d2a6914f681dbb9148c4ac11e6fa92452010506e",
+        "file": "test.jsonl",
+        "sha256": "0459b3120bcacd35044613ae89c653d01671344ae5bff28e701bd160cfc5c112"
+      },
+      "prepared_manifest.json": {
+        "repository": "huyvanzzz/prepared_data",
+        "revision": "d2a6914f681dbb9148c4ac11e6fa92452010506e",
+        "file": "manifest.json",
+        "sha256": "054a1cefdf6f1d8b2a9b7ef2c26d843f928f3e770fef42e3b579e6221d6ef36d"
+      }
+    },
+    "code_sha256": {
+      "filter_drivelm_attention_data.py": "6ab9b9199d1e6ff0e6862fce483b820fa79c6737c19b6f083c56ec0e50c8cb17",
+      "drivelm_localization.py": "5f4d14dcf31e5f2a85fbf1a63eaa0aa30ae3e0325a10893ab0b20bc79be0f8e9"
+    },
+    "policy_sha256": "28e3fb76fad25170194833cb68954cd0062fe5593b39068b3cd37b59768782ae",
+    "file_sha256": {
+      "causal.jsonl": "54364156c984b014f9eef874f41dd993aa0bf53f4672ec615507f79195f21bc7",
+      "localization_with_coordinates.jsonl": "2cc5ce8716eddc29e6325052524a6f744885ffb64158423413feeec095132efd",
+      "localization_without_coordinates.jsonl": "630af50dda209197ac5b1b1e849475b92a34bb4c817057bf95e2d19a76676216",
+      "audit.jsonl": "b216e210f39e5eca33185c997c2bc9a0712963c748a0848f6b39077bb1b0707e",
+      "policy.json": "28e3fb76fad25170194833cb68954cd0062fe5593b39068b3cd37b59768782ae",
+      "statistics.json": "6fe448348c0c5fe9c42538af239c10f7a6b7591f13d0696288989f75b507e908",
+      "README.md": "4c8e34a5ce9e5c7618e10c992b6cad860274ec2b92aeae12e56b4a12d3556253"
+    }
+  },
+  "fingerprint": "563561514fb257360a40a3eb9ba7846b6e8829411ae8e42b68a2e723cd7a9156",
+  "source_questions": 16817,
+  "counts": {
+    "causal": {
+      "questions": 2581,
+      "targets": 0,
+      "frames": 189,
+      "scenes": 35
+    },
+    "localization_with_coordinates": {
+      "questions": 749,
+      "targets": 749,
+      "frames": 188,
+      "scenes": 35
+    },
+    "localization_without_coordinates": {
+      "questions": 210,
+      "targets": 652,
+      "frames": 187,
+      "scenes": 35
+    }
+  }
+}

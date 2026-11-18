@@ -1,0 +1,2 @@
+-r ../smolvlm_attention/requirements.txt
+filelock>=3.16,<4

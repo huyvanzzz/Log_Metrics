@@ -12,11 +12,15 @@ import zipfile
 
 
 def ensure_no_workers(output_roots):
-    for name in ('smolvlm_attention.runtime', 'smolvlm_attention.generated_runtime', 'dinov2_attention.runtime'):
+    for name in ('smolvlm_attention.runtime', 'smolvlm_attention.generated_runtime',
+                 'dinov2_attention.runtime', 'smolvlm_probing.runtime'):
         module = sys.modules.get(name)
         if module is not None and any(process.poll() is None for process in getattr(module, '_PROCESSES', {}).values()):
             raise RuntimeError('A measurement worker is still running. Wait for it to finish before pulling source.')
-    for root in output_roots:
+    # The canonical probing output is shared by all notebooks. Also inspect it
+    # after a kernel restart, when the new runtime is no longer in sys.modules.
+    roots = set(map(Path, output_roots)) | {Path('/kaggle/working/smolvlm_probing_outputs')}
+    for root in roots:
         for path in (Path(root) / 'logs').glob('*.pid.json'):
             pid = json.loads(path.read_text(encoding='utf-8'))['pid']
             try:

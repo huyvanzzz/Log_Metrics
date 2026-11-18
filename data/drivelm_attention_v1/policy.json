@@ -1,0 +1,1912 @@
+{
+  "version": "drivelm-attention-metadata-v1",
+  "seed": 42,
+  "validation_status": "metadata_frozen_not_visually_verified",
+  "state_motion_questions": "excluded",
+  "selection": "maximum_nonredundant_metadata_eligible",
+  "camera_order": [
+    "Front",
+    "Front-Left",
+    "Front-Right",
+    "Back",
+    "Back-Left",
+    "Back-Right"
+  ],
+  "answer_length_ceiling": null,
+  "visual_review": false,
+  "normalization": "NFKC casefold whitespace collapse and trailing sentence punctuation; source text unchanged",
+  "localization_binding": "single_query_tag_attribute or unique_complete_annotation_description",
+  "source_duplicate_conflicts": "exclude entire normalized frame/question group",
+  "template_rules": [
+    {
+      "template": "are <object> and <object> traffic signs",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 378
+    },
+    {
+      "template": "are there barriers to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 22
+    },
+    {
+      "template": "are there barriers to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 26
+    },
+    {
+      "template": "are there barriers to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 16
+    },
+    {
+      "template": "are there barriers to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 26
+    },
+    {
+      "template": "are there barriers to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 36
+    },
+    {
+      "template": "are there barriers to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there bicycles with riders to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there bicycles with riders to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there bicycles with riders to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there bicycles with riders to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there bicycles with riders to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 4
+    },
+    {
+      "template": "are there bicycles with riders to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 3
+    },
+    {
+      "template": "are there bicycles without riders to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there bicycles without riders to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there bicycles without riders to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 11
+    },
+    {
+      "template": "are there bicycles without riders to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 9
+    },
+    {
+      "template": "are there bicycles without riders to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there bicycles without riders to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there motorcycles with riders to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there motorcycles with riders to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 12
+    },
+    {
+      "template": "are there motorcycles with riders to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 9
+    },
+    {
+      "template": "are there motorcycles with riders to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 4
+    },
+    {
+      "template": "are there motorcycles with riders to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there motorcycles with riders to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there motorcycles without riders to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 12
+    },
+    {
+      "template": "are there motorcycles without riders to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there motorcycles without riders to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there motorcycles without riders to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there motorcycles without riders to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there motorcycles without riders to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there moving buses to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there moving buses to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 11
+    },
+    {
+      "template": "are there moving buses to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 3
+    },
+    {
+      "template": "are there moving buses to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there moving buses to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there moving buses to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there moving cars to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 24
+    },
+    {
+      "template": "are there moving cars to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 87
+    },
+    {
+      "template": "are there moving cars to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 18
+    },
+    {
+      "template": "are there moving cars to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 21
+    },
+    {
+      "template": "are there moving cars to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 58
+    },
+    {
+      "template": "are there moving cars to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 32
+    },
+    {
+      "template": "are there moving construction vehicles to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 4
+    },
+    {
+      "template": "are there moving construction vehicles to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 11
+    },
+    {
+      "template": "are there moving construction vehicles to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there moving construction vehicles to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 2
+    },
+    {
+      "template": "are there moving construction vehicles to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 11
+    },
+    {
+      "template": "are there moving construction vehicles to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there moving pedestrians to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 24
+    },
+    {
+      "template": "are there moving pedestrians to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 49
+    },
+    {
+      "template": "are there moving pedestrians to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 19
+    },
+    {
+      "template": "are there moving pedestrians to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 26
+    },
+    {
+      "template": "are there moving pedestrians to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 48
+    },
+    {
+      "template": "are there moving pedestrians to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 26
+    },
+    {
+      "template": "are there moving trailers to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there moving trailers to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there moving trailers to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 7
+    },
+    {
+      "template": "are there moving trailers to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 9
+    },
+    {
+      "template": "are there moving trailers to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there moving trailers to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 10
+    },
+    {
+      "template": "are there moving trucks to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there moving trucks to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 19
+    },
+    {
+      "template": "are there moving trucks to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there moving trucks to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 12
+    },
+    {
+      "template": "are there moving trucks to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 22
+    },
+    {
+      "template": "are there moving trucks to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there parked cars to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 56
+    },
+    {
+      "template": "are there parked cars to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 68
+    },
+    {
+      "template": "are there parked cars to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 39
+    },
+    {
+      "template": "are there parked cars to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 69
+    },
+    {
+      "template": "are there parked cars to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 62
+    },
+    {
+      "template": "are there parked cars to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 45
+    },
+    {
+      "template": "are there parked construction vehicles to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 11
+    },
+    {
+      "template": "are there parked construction vehicles to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 4
+    },
+    {
+      "template": "are there parked construction vehicles to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there parked construction vehicles to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 5
+    },
+    {
+      "template": "are there parked construction vehicles to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 10
+    },
+    {
+      "template": "are there parked construction vehicles to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there parked trailers to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 14
+    },
+    {
+      "template": "are there parked trailers to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there parked trailers to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there parked trailers to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 8
+    },
+    {
+      "template": "are there parked trailers to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 14
+    },
+    {
+      "template": "are there parked trailers to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 23
+    },
+    {
+      "template": "are there parked trucks to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 25
+    },
+    {
+      "template": "are there parked trucks to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 24
+    },
+    {
+      "template": "are there parked trucks to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 15
+    },
+    {
+      "template": "are there parked trucks to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 17
+    },
+    {
+      "template": "are there parked trucks to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 37
+    },
+    {
+      "template": "are there parked trucks to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 15
+    },
+    {
+      "template": "are there standing pedestrians to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 18
+    },
+    {
+      "template": "are there standing pedestrians to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 15
+    },
+    {
+      "template": "are there standing pedestrians to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 12
+    },
+    {
+      "template": "are there standing pedestrians to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 13
+    },
+    {
+      "template": "are there standing pedestrians to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 19
+    },
+    {
+      "template": "are there standing pedestrians to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 14
+    },
+    {
+      "template": "are there stopped buses to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 4
+    },
+    {
+      "template": "are there stopped buses to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 10
+    },
+    {
+      "template": "are there stopped buses to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 2
+    },
+    {
+      "template": "are there stopped buses to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there stopped buses to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 12
+    },
+    {
+      "template": "are there stopped buses to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 6
+    },
+    {
+      "template": "are there traffic cones to the back left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 23
+    },
+    {
+      "template": "are there traffic cones to the back of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 21
+    },
+    {
+      "template": "are there traffic cones to the back right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 20
+    },
+    {
+      "template": "are there traffic cones to the front left of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 28
+    },
+    {
+      "template": "are there traffic cones to the front of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 33
+    },
+    {
+      "template": "are there traffic cones to the front right of the ego car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 35
+    },
+    {
+      "template": "based on <object> in this scene, what is the most possible action of the ego vehicle",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 72
+    },
+    {
+      "template": "based on the observation of <object>, what actions may <object> take",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 41
+    },
+    {
+      "template": "based on the observations of <object>, what are possible actions to be taken by <object>? what is the reason",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 296
+    },
+    {
+      "template": "can i park temporarily",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can i turn right",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can my vehicle make a left turn at this intersection",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can the car accelerate straight ahead",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can the car turn left",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can the self vehicle go straight",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can the vehicle turn left",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "can the vehicle turn right",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "does the lighting in this scene affect the driver's driving",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "except for the ego vehicle, what object would consider <object> to be most relevant to its decision",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 348
+    },
+    {
+      "template": "identify all the traffic elements in the front view, categorize them, determine their status, and predict the bounding box around each one. the output should be a list formatted as (c, s, x1, y1, x2, y2), where c represents the category, s denotes the status, and x1, y1, x2, y2 are the offsets of the top-left and bottom-right corners of the box relative to the center point",
+      "family": "structured_bbox",
+      "decision": "excluded",
+      "rule_id": "structured_bbox_question",
+      "count": 109
+    },
+    {
+      "template": "in this scenario, what are dangerous actions to take for the ego vehicle",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 189
+    },
+    {
+      "template": "in this scenario, what are safe actions to take for the ego vehicle",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 189
+    },
+    {
+      "template": "in this scenario, what object is most likely to consider <object>",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 89
+    },
+    {
+      "template": "is <object> a traffic sign or a road barrier",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 761
+    },
+    {
+      "template": "is <object> an object that the ego vehicle should consider in the current scene",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 672
+    },
+    {
+      "template": "is it dangerous to perform an emergency brake",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "is it necessary for the ego vehicle to take <object> into account",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 89
+    },
+    {
+      "template": "is it safe to make a right turn in my car",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "is there any traffic element in the front view",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 189
+    },
+    {
+      "template": "please describe the current scene",
+      "family": "scene_description",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 182
+    },
+    {
+      "template": "predict the behavior of the ego vehicle",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "ego_behavior_question",
+      "count": 189
+    },
+    {
+      "template": "what actions could the ego vehicle take based on <object>? why take this action and what's the probability",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 672
+    },
+    {
+      "template": "what actions taken by the ego vehicle can lead to a collision with <object>",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 672
+    },
+    {
+      "template": "what affects judgment",
+      "family": "visibility_environment",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 1
+    },
+    {
+      "template": "what are objects to the back left of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 141
+    },
+    {
+      "template": "what are objects to the back of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 180
+    },
+    {
+      "template": "what are objects to the back right of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 117
+    },
+    {
+      "template": "what are objects to the front left of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 143
+    },
+    {
+      "template": "what are objects to the front of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 167
+    },
+    {
+      "template": "what are objects to the front right of the ego car",
+      "family": "camera_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 133
+    },
+    {
+      "template": "what are the important objects in the current scene? those objects will be considered for the future reasoning and driving decision",
+      "family": "key_object_inventory",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 189
+    },
+    {
+      "template": "what does <object> mean",
+      "family": "traffic_sign_meaning",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 89
+    },
+    {
+      "template": "what is the future state of <object>",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 672
+    },
+    {
+      "template": "what is the moving status of object <object>",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 354
+    },
+    {
+      "template": "what is the observed status of object <object>",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 672
+    },
+    {
+      "template": "what is the priority of the objects that the ego vehicle should consider?(in descending order)",
+      "family": "tag_priority",
+      "decision": "excluded",
+      "rule_id": "tag_priority_question",
+      "count": 189
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle accelerates and goes straight",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 40
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle accelerates and goes straight?does the ego vehicle tend to take the primary responsibility for the collision",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 1
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle decelerates and goes straight",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 75
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle decelerates and turns left",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 2
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle goes straight and keeps the same speed",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 391
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle slows down and turns right",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 15
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle speeds up and turns left",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 2
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle speeds up and turns left?does the ego vehicle tend to take the primary responsibility for the collision",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 1
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle speeds up and turns right",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 6
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle steps on the brakes",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 130
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle turns left at a constant speed",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 2
+    },
+    {
+      "template": "what is the probability of colliding with <object> after the ego vehicle turns right at a constant speed",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 7
+    },
+    {
+      "template": "what is the relative positioning of the important objects in the current scene",
+      "family": "spatial_relation",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 179
+    },
+    {
+      "template": "what is the status of the bicycle that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 10
+    },
+    {
+      "template": "what is the status of the bicycle that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the bicycle that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 5
+    },
+    {
+      "template": "what is the status of the bicycle that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 10
+    },
+    {
+      "template": "what is the status of the bicycle that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the bicycle that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 11
+    },
+    {
+      "template": "what is the status of the bicycles that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the bicycles that are to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 6
+    },
+    {
+      "template": "what is the status of the bicycles that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the bicycles that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the bicycles that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the bicycles that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 3
+    },
+    {
+      "template": "what is the status of the bus that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 4
+    },
+    {
+      "template": "what is the status of the bus that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 18
+    },
+    {
+      "template": "what is the status of the bus that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the bus that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 3
+    },
+    {
+      "template": "what is the status of the bus that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 23
+    },
+    {
+      "template": "what is the status of the bus that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the buses that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the buses that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the car that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 24
+    },
+    {
+      "template": "what is the status of the car that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 48
+    },
+    {
+      "template": "what is the status of the car that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 37
+    },
+    {
+      "template": "what is the status of the car that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 26
+    },
+    {
+      "template": "what is the status of the car that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 23
+    },
+    {
+      "template": "what is the status of the car that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 31
+    },
+    {
+      "template": "what is the status of the cars that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 68
+    },
+    {
+      "template": "what is the status of the cars that are to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 120
+    },
+    {
+      "template": "what is the status of the cars that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 45
+    },
+    {
+      "template": "what is the status of the cars that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 76
+    },
+    {
+      "template": "what is the status of the cars that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 115
+    },
+    {
+      "template": "what is the status of the cars that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 48
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 4
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 5
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 6
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the construction vehicle that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 5
+    },
+    {
+      "template": "what is the status of the construction vehicles that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 3
+    },
+    {
+      "template": "what is the status of the construction vehicles that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 6
+    },
+    {
+      "template": "what is the status of the construction vehicles that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycle that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 20
+    },
+    {
+      "template": "what is the status of the motorcycle that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 13
+    },
+    {
+      "template": "what is the status of the motorcycle that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycle that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycle that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the motorcycles that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycles that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycles that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycles that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the motorcycles that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 2
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 26
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 31
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 25
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 37
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 36
+    },
+    {
+      "template": "what is the status of the pedestrian that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 20
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 41
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 55
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 11
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 24
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 63
+    },
+    {
+      "template": "what is the status of the pedestrians that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 27
+    },
+    {
+      "template": "what is the status of the trailer that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 1
+    },
+    {
+      "template": "what is the status of the trailer that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the trailer that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 4
+    },
+    {
+      "template": "what is the status of the trailer that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 12
+    },
+    {
+      "template": "what is the status of the trailer that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 26
+    },
+    {
+      "template": "what is the status of the trailer that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 25
+    },
+    {
+      "template": "what is the status of the trailers that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 10
+    },
+    {
+      "template": "what is the status of the trailers that are to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 6
+    },
+    {
+      "template": "what is the status of the trailers that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 9
+    },
+    {
+      "template": "what is the status of the trailers that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 3
+    },
+    {
+      "template": "what is the status of the trailers that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 10
+    },
+    {
+      "template": "what is the status of the trailers that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 9
+    },
+    {
+      "template": "what is the status of the truck that is to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 26
+    },
+    {
+      "template": "what is the status of the truck that is to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 45
+    },
+    {
+      "template": "what is the status of the truck that is to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 20
+    },
+    {
+      "template": "what is the status of the truck that is to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 25
+    },
+    {
+      "template": "what is the status of the truck that is to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 48
+    },
+    {
+      "template": "what is the status of the truck that is to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 41
+    },
+    {
+      "template": "what is the status of the trucks that are to the back left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 19
+    },
+    {
+      "template": "what is the status of the trucks that are to the back of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 28
+    },
+    {
+      "template": "what is the status of the trucks that are to the back right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 8
+    },
+    {
+      "template": "what is the status of the trucks that are to the front left of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 13
+    },
+    {
+      "template": "what is the status of the trucks that are to the front of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 33
+    },
+    {
+      "template": "what is the status of the trucks that are to the front right of the ego car",
+      "family": "state_motion",
+      "decision": "excluded",
+      "rule_id": "state_motion_question",
+      "count": 10
+    },
+    {
+      "template": "what is the target action of the ego vehicle",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 189
+    },
+    {
+      "template": "what is the traffic signal that the ego vehicle should pay attention to",
+      "family": "traffic_signal",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 189
+    },
+    {
+      "template": "what is the visual description of <object>",
+      "family": "object_appearance",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 762
+    },
+    {
+      "template": "what is the visual description of this scene",
+      "family": "scene_description",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 2
+    },
+    {
+      "template": "what is worth noting about this scene",
+      "family": "scene_description",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 2
+    },
+    {
+      "template": "what kind of traffic sign is <object>",
+      "family": "traffic_sign_class",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 89
+    },
+    {
+      "template": "what object should the ego vehicle notice first when the ego vehicle is getting to the next possible location? what is the state of the object that is first noticed by the ego vehicle and what action should the ego vehicle take? what object should the ego vehicle notice second when the ego vehicle is getting to the next possible location? what is the state of the object perceived by the ego vehicle as second and what action should the ego vehicle take? what object should the ego vehicle notice third? what is the state of the object perceived by the ego vehicle as third and what action should the ego vehicle take",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 189
+    },
+    {
+      "template": "what object would consider <object> to be most relevant to its decision",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 756
+    },
+    {
+      "template": "what should be noticed in this scene",
+      "family": "scene_description",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 1
+    },
+    {
+      "template": "what should be paid attention to in the current environment",
+      "family": "visibility_environment",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 1
+    },
+    {
+      "template": "what will affect driving judgment in this scene",
+      "family": "visibility_environment",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 12
+    },
+    {
+      "template": "what would affect driving judgment in this scene",
+      "family": "visibility_environment",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 4
+    },
+    {
+      "template": "what's your comment on this scene",
+      "family": "scene_description",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 44
+    },
+    {
+      "template": "which lanes are each important object on in the scene",
+      "family": "lane_relation",
+      "decision": "candidate",
+      "rule_id": "reviewed_visual_template",
+      "count": 111
+    },
+    {
+      "template": "which object is most likely to be occluded by <object>? would this object affect the ego vehicle? based on this object, what action of the ego vehicle is dangerous",
+      "family": "planning_prediction",
+      "decision": "excluded",
+      "rule_id": "generic_planning_prediction_question",
+      "count": 354
+    },
+    {
+      "template": "will <object> be in the moving direction of <object>",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 371
+    },
+    {
+      "template": "will <object> change its motion state based on <object>",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 296
+    },
+    {
+      "template": "will water droplets on the glass affect the driver's visibility",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 1
+    },
+    {
+      "template": "will water droplets on the glass affect visibility",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 2
+    },
+    {
+      "template": "would <object> be in the moving direction of the ego vehicle",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 761
+    },
+    {
+      "template": "would <object> take <object> into account",
+      "family": "binary_confirmation",
+      "decision": "excluded",
+      "rule_id": "binary_question",
+      "count": 75
+    }
+  ]
+}

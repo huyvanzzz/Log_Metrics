@@ -1,0 +1,4 @@
+# Frozen artifact hashes refer to exact bytes, on Windows and Kaggle/Linux.
+data/drivelm_attention_v1/* -text
+scripts/filter_drivelm_attention_data.py -text
+scripts/drivelm_localization.py -text
