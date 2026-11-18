@@ -65,7 +65,7 @@ Bốn hình độc lập trong `figures/` đều có bản PNG và PDF.
 - `view_recognition_accuracy` có kết quả theo layer cho hai nhóm nhãn.
 - `token_level_attention_entropy` và `question_level_attention_entropy`
   có chung trục entropy từ 0 đến 1.
-- `text_to_vision_attention_maps` có sáu camera tại layer 2, 15 và 30, đánh số
+- `text_to_vision_attention_maps` có sáu camera tại layer 2, 15, 23 và 30, đánh số
   layer từ 1. Heatmap dùng giá trị attention trung bình theo câu hỏi, chung
   thang màu log khi có nhiều giá trị dương khác nhau. Vòng tròn đánh dấu tọa độ
   trong object tag trên ảnh tương ứng.

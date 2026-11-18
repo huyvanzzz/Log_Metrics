@@ -9,7 +9,7 @@ from matplotlib.ticker import PercentFormatter
 import numpy as np
 
 from smolvlm_attention.plotting import _STYLE, _export, plt
-from .data import CAMERAS
+from .data import CAMERAS, MAP_LAYERS
 from .runtime import LAYERS, read_image, summarize
 
 
@@ -53,7 +53,8 @@ def _entropy(output, values, name, ylabel, count):
 def _maps(output, manifest, image_root, heatmap):
     example = manifest['illustration']
     row = manifest['rows'][example['id']]
-    layers = manifest['map_layers']
+    # Saved attention covers every layer, including those omitted by older manifests.
+    layers = sorted(set(manifest['map_layers']).union(MAP_LAYERS))
     maps = heatmap[np.asarray(layers) - 1].reshape(len(layers), len(CAMERAS), 8, 8)
     positive = maps[maps > 0]
     if positive.size and positive.min() < positive.max():
@@ -62,7 +63,8 @@ def _maps(output, manifest, image_root, heatmap):
         norm = Normalize(vmin=0, vmax=float(maps.max()) or 1)
     images = [read_image(image_root, path, manifest['assets'][path])
               for path in manifest['frames'][row['frame']]]
-    fig, axes = plt.subplots(len(layers), len(CAMERAS), figsize=(14.5, 6.1), layout='constrained')
+    fig, axes = plt.subplots(len(layers), len(CAMERAS), figsize=(14.5, 2 * len(layers)),
+                             layout='constrained')
     cmap = plt.get_cmap('magma')
     for layer_idx, (layer, axes_row) in enumerate(zip(layers, axes)):
         for camera_idx, (camera, image, ax) in enumerate(zip(CAMERAS, images, axes_row)):

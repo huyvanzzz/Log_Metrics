@@ -15,7 +15,7 @@ CAMERAS = ('CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT',
            'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT')
 TEST_COUNT = 16_817
 IMAGE_COUNT = 1_134
-MAP_LAYERS = (2, 15, 30)
+MAP_LAYERS = (2, 15, 23, 30)
 TEST_FILENAME = 'multi_frame_test.json'
 HF_DATASET = 'minhdang0901/drivelm-nuscenes-v1-0'
 HF_REVISION = '6c4336a5279eaba3f3dfc5b525cc6ba57d55d61a'
