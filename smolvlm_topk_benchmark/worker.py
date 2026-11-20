@@ -1,26 +1,25 @@
-"""One resident model per GPU; round-robin four independent full-test configurations."""
+"""One resident model per GPU; finish each full-test configuration in order."""
 import argparse
 import json
 from pathlib import Path
 import time
 
-from .config import BATCH_SIZE, worker_configs
+from .config import BATCH_SIZE, CONFIG_SETS, worker_configs
 from .state import (atomic_json, digest, read_run, input_rows, load_batches, load_selection, save_batch)
 
 
 def schedule_batches(rows,names,completed,build_shared,generate,save,*,progress=None):
-    """Fixed logical/physical batch 32 (last remainder), commit only complete results."""
-    for start in range(0,len(rows),BATCH_SIZE):
-        pending=[name for name in names if start not in completed[name]]
-        if not pending:continue
-        selected=rows[start:start+BATCH_SIZE]
-        context=dict(start=start,sample_ids=[r['sample_id'] for r in selected],batch_size=len(selected))
-        try:
-            shared=build_shared(selected)
-        except Exception as exc:
-            raise RuntimeError(f'Fusion failed, batch {BATCH_SIZE} (no automatic reduction), {context}: {exc!r}') from exc
-        try:
-            for name in pending:
+    """Fixed logical/physical batch 64 (last remainder), commit only complete results."""
+    for name in names:
+        for start in range(0,len(rows),BATCH_SIZE):
+            if start in completed[name]:continue
+            selected=rows[start:start+BATCH_SIZE]
+            context=dict(start=start,sample_ids=[r['sample_id'] for r in selected],batch_size=len(selected))
+            try:
+                shared=build_shared(selected)
+            except Exception as exc:
+                raise RuntimeError(f'{name}: Fusion failed, batch {BATCH_SIZE} (no automatic reduction), {context}: {exc!r}') from exc
+            try:
                 if progress:progress(dict(stage='generating',config=name,**context))
                 try:
                     records=generate(name,selected,shared)
@@ -29,8 +28,8 @@ def schedule_batches(rows,names,completed,build_shared,generate,save,*,progress=
                     raise RuntimeError(f'{name}, fixed batch {BATCH_SIZE} (no retry/reduction), {context}: {exc!r}') from exc
                 completed[name].add(start)
                 if progress:progress(dict(stage='committed',config=name,**context))
-        finally:
-            del shared
+            finally:
+                del shared
 
 
 def run_worker(config_path,config_set,worker):
@@ -55,7 +54,7 @@ def run_worker(config_path,config_set,worker):
                               for name,done in completed.items()}
         status['processed']=sum(status['counts'].values())
         atomic_json(status_path,status)
-        if status['stage']!='committed' or status.get('start',0)%(32*25)==0:
+        if status['stage']!='committed' or status.get('start',0)%(BATCH_SIZE*25)==0:
             print(json.dumps(status),flush=True)
     logs.mkdir(parents=True,exist_ok=True)
     with FileLock(str(logs/f'bench_{config_set}_{worker}.worker.lock'),timeout=0):
@@ -110,7 +109,7 @@ def run_worker(config_path,config_set,worker):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',required=True)
-    parser.add_argument('--config-set',choices=('first','second'),required=True)
+    parser.add_argument('--config-set',choices=tuple(CONFIG_SETS),required=True)
     parser.add_argument('--worker',type=int,choices=(0,1),required=True)
     args=parser.parse_args()
     run_worker(args.config,args.config_set,args.worker)

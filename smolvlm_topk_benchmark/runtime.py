@@ -1,4 +1,4 @@
-"""Prepare, launch, reconnect, score and bundle two independent eight-config waves."""
+"""Prepare, launch, reconnect, score and bundle fifteen layers or a separate base."""
 import csv
 import importlib.metadata
 import io
@@ -12,7 +12,7 @@ import time
 import zipfile
 
 from filelock import FileLock
-from .config import BATCH_SIZE,CONFIGS,CONFIG_SETS,K,MAX_NEW_TOKENS,POLICY,TEST_COUNT,worker_configs,config_layer
+from .config import BATCH_SIZE,CONFIGS,CONFIG_SETS,K,MAX_NEW_TOKENS,POLICY,TEST_COUNT,worker_configs,config_layer,active_workers
 from .state import (atomic_bytes,atomic_json,digest,fingerprint,initialize_run,read_run,input_rows,
                     load_batches,finalize_config,validate_result,pid_is_alive)
 
@@ -50,9 +50,9 @@ def _config_complete(run,name):
     return set(batches)==set(range(0,run['count'],BATCH_SIZE))
 
 
-def resolve_run_mode(output,config_set='first',mode='auto'):
+def resolve_run_mode(output,config_set='layers',mode='auto'):
     if config_set not in CONFIG_SETS or mode not in ('auto','measure','resume','score'):
-        raise ValueError('Select first/second and auto/measure/resume/score')
+        raise ValueError('Select layers/base and auto/measure/resume/score')
     path=Path(output)/'benchmark_run.json'
     if not path.exists():
         if mode in ('score','resume'):raise FileNotFoundError('No existing benchmark run')
@@ -105,7 +105,7 @@ def _scorer_command(output,*,input_path=None,expected_count=None):
     return result
 
 
-def prepare_run(output,*,config_set='first',mode='auto',attention_input=None,cache_input_dir='',prepared_dir=None,
+def prepare_run(output,*,config_set='layers',mode='auto',attention_input=None,cache_input_dir='',prepared_dir=None,
                 artifacts=None,source_commit=None,source_sha256=None):
     output=Path(output).resolve(); resolved=resolve_run_mode(output,config_set,mode)
     if resolved=='score':return output/'benchmark_run.json'
@@ -115,7 +115,8 @@ def prepare_run(output,*,config_set='first',mode='auto',attention_input=None,cac
     if versions['transformers']!='4.46.3' or versions['tokenizers']!='0.20.4':
         raise ValueError('Generation requires transformers==4.46.3 and tokenizers==0.20.4')
     import torch
-    if torch.cuda.device_count()<2:raise RuntimeError('Select two CUDA GPUs (e.g. T4 x2)')
+    if torch.cuda.device_count()<len(active_workers(config_set)):
+        raise RuntimeError(f'{config_set} requires {len(active_workers(config_set))} CUDA GPU(s)')
     from smolvlm_attention.sample_runtime import resolve_artifacts
     from smolvlm_attention.sample_inputs import prepare_inputs
     from .data import find_attention,check_export,prepare_selection
@@ -143,7 +144,8 @@ def prepare_run(output,*,config_set='first',mode='auto',attention_input=None,cac
                         source_commit=source_commit,source_sha256=source_sha256)
     run=read_run(path)
     for name in CONFIG_SETS[config_set]:prepare_selection(run,name,export)
-    print(f'Ready: {config_set}, 8 configs x {len(rows)} samples; 2 workers; fixed batch=32; greedy<=512.',flush=True)
+    print(f'Ready: {config_set}, {len(CONFIG_SETS[config_set])} configs x {len(rows)} samples; '
+          f'{len(active_workers(config_set))} worker(s); sequential configs per GPU; fixed batch={BATCH_SIZE}; greedy<=512.',flush=True)
     return path
 
 
@@ -155,16 +157,18 @@ def _pid_alive(path):
     return path.exists() and pid_is_alive(json.loads(path.read_text())['pid'])
 
 
-def launch_workers(config_path,config_set='first'):
+def launch_workers(config_path,config_set='layers'):
     path=Path(config_path).resolve();run=read_run(path);assert_compatible(run)
     import torch
-    if torch.cuda.device_count()<2:raise RuntimeError('Two CUDA GPUs are required')
+    workers=active_workers(config_set)
+    if torch.cuda.device_count()<len(workers):
+        raise RuntimeError(f'{config_set} requires {len(workers)} CUDA GPU(s)')
     logs=Path(run['output_root'])/'logs';logs.mkdir(parents=True,exist_ok=True)
     with FileLock(str(logs/'launch.lock'),timeout=0):
         for other in CONFIG_SETS:
             if other!=config_set and any(_pid_alive(_pid_path(run,other,w)) for w in (0,1)):
                 raise RuntimeError('Another config set is still running; finish it first')
-        for worker in (0,1):
+        for worker in workers:
             key=(str(path),config_set,worker);current=_PROCESSES.get(key)
             if (current is not None and current.poll() is None) or _pid_alive(_pid_path(run,config_set,worker)):
                 print(f'GPU {worker}: reconnect with wait cell.',flush=True);continue
@@ -174,7 +178,7 @@ def launch_workers(config_path,config_set='first'):
             if complete:counts={n:run['count'] for n in names}
             status=dict(status='complete' if complete else 'starting',stage='complete' if complete else 'starting',
                 fingerprint=run['fingerprint'],counts=counts,processed=sum(counts.values()),
-                worker=worker,config_set=config_set,total=run['count']*4)
+                worker=worker,config_set=config_set,total=run['count']*len(names))
             atomic_json(logs/f'bench_{config_set}_{worker}.status.json',status)
             if complete:_PROCESSES.pop(key,None);continue
             env=dict(os.environ,CUDA_VISIBLE_DEVICES=str(worker),TOKENIZERS_PARALLELISM='false',
@@ -190,16 +194,18 @@ def launch_workers(config_path,config_set='first'):
     return config_path
 
 
-def wait_workers(config_path,config_set='first',*,poll_seconds=1):
+def wait_workers(config_path,config_set='layers',*,poll_seconds=1):
     from tqdm.auto import tqdm
     path=Path(config_path).resolve();run=read_run(path);logs=Path(run['output_root'])/'logs'
     bars={n:tqdm(total=run['count'],desc=n,position=i,unit='question') for i,n in enumerate(CONFIG_SETS[config_set])}
-    gpu=[tqdm(total=run['count']*4,desc=f'GPU {w}',position=8+w,unit='question') for w in (0,1)]
-    total=tqdm(total=run['count']*8,desc='Total',position=10,unit='question')
+    workers=active_workers(config_set); config_count=len(CONFIG_SETS[config_set])
+    gpu={w:tqdm(total=run['count']*len(worker_configs(config_set,w)),desc=f'GPU {w}',
+                position=config_count+i,unit='question') for i,w in enumerate(workers)}
+    total=tqdm(total=run['count']*config_count,desc='Total',position=config_count+len(workers),unit='question')
     try:
         while True:
             finished=True;processed=0
-            for worker in (0,1):
+            for worker in workers:
                 status_path=logs/f'bench_{config_set}_{worker}.status.json'
                 if not status_path.exists():raise RuntimeError('Launch workers first')
                 status=json.loads(status_path.read_text(encoding='utf-8'))
@@ -214,7 +220,7 @@ def wait_workers(config_path,config_set='first',*,poll_seconds=1):
                 for name,count in status['counts'].items():
                     bars[name].update(count-bars[name].n)
                 n=sum(status['counts'].values());gpu[worker].update(n-gpu[worker].n)
-                gpu[worker].set_postfix_str(f"{status['stage']} {status.get('config','')}; fixed batch=32",refresh=False)
+                gpu[worker].set_postfix_str(f"{status['stage']} {status.get('config','')}; fixed batch={BATCH_SIZE}",refresh=False)
                 processed+=n
             total.update(processed-total.n)
             if finished:return
@@ -222,7 +228,7 @@ def wait_workers(config_path,config_set='first',*,poll_seconds=1):
     except KeyboardInterrupt:
         print('Workers keep running. Rerun the wait cell to reconnect.',flush=True);raise
     finally:
-        for bar in list(bars.values())+gpu+[total]:bar.close()
+        for bar in list(bars.values())+list(gpu.values())+[total]:bar.close()
 
 
 def _scoring_fingerprint(identity):
@@ -232,7 +238,7 @@ def _scoring_fingerprint(identity):
         tokenization=identity['tokenization'],meteor_sanitization=identity['meteor_sanitization']))
 
 
-def score_results(config_path,config_set='first',*,previous_results=None):
+def score_results(config_path,config_set='layers',*,previous_results=None):
     from tqdm.auto import tqdm
     run=read_run(config_path);root=Path(run['output_root'])
     for name in CONFIG_SETS[config_set]:
@@ -280,7 +286,7 @@ def score_results(config_path,config_set='first',*,previous_results=None):
     summary=dict(experiment_fingerprint=run['fingerprint'],scoring_fingerprint=scoring_identity,
         config_set=config_set,baseline_available=baseline is not None,results=summaries,
         scope='Answer quality only; source layer selects input tokens; not pruning at that layer',
-        generation=dict(greedy=True,max_new_tokens=512,batch_size=32,precision='float32_no_tf32'))
+        generation=dict(greedy=True,max_new_tokens=512,batch_size=BATCH_SIZE,precision='float32_no_tf32'))
     atomic_json(root/'summary.json',summary)
     stream=io.StringIO();fields=['config','layer','k','count',*METRICS,'empty_prediction_count','eos_count','max_new_tokens_count']
     writer=csv.DictWriter(stream,fieldnames=fields);writer.writeheader()

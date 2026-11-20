@@ -9,13 +9,13 @@ from smolvlm_topk_benchmark.state import (initialize_run, read_run, input_rows, 
     load_batches, finalize_config, validate_result, write_selection, load_selection)
 
 
-def samples(count=35):
+def samples(count=67):
     return [dict(row_index=i, sample_id=f'test-{i}', eval_id=i, answer='A car.',
                  input_ids=[9]*384+[3], image_token_id=9, attention_row=i) for i in range(count)]
 
 
-def run_fixture(tmp_path, count=35, policy='fixture'):
-    path = initialize_run(tmp_path, {'policy': policy, 'batch_size': 32}, samples(count),
+def run_fixture(tmp_path, count=67, policy='fixture'):
+    path = initialize_run(tmp_path, {'policy': policy, 'batch_size': BATCH_SIZE}, samples(count),
                           {'checkpoint': 'fixture'})
     return read_run(path)
 
@@ -27,16 +27,20 @@ def predictions(rows):
 
 
 def test_registry_and_same_dataset_for_every_config():
-    assert BATCH_SIZE == 32
-    assert [config_layer(c) for c in CONFIG_SETS['first']] == [0,1,2,9,10,11,15,16]
-    assert [config_layer(c) for c in CONFIG_SETS['second']] == [17,21,22,23,25,26,27,None]
-    assert worker_configs('first', 0) + worker_configs('first', 1) == CONFIG_SETS['first']
+    assert BATCH_SIZE == 64
+    assert [config_layer(c) for c in CONFIG_SETS['layers']] == [0,1,2,9,10,11,15,16,17,21,22,23,25,26,27]
+    assert CONFIG_SETS['base'] == ('base',)
+    assert len(worker_configs('layers', 0)) == 7
+    assert len(worker_configs('layers', 1)) == 8
+    assert worker_configs('layers', 0) + worker_configs('layers', 1) == CONFIG_SETS['layers']
+    assert worker_configs('base', 0) == ('base',)
+    assert worker_configs('base', 1) == ()
 
 
 def test_initialize_rejects_mismatch_before_overwrite_and_part_is_not_identity(tmp_path):
     run = run_fixture(tmp_path)
     before = (tmp_path / 'benchmark_run.json').read_bytes()
-    initialize_run(tmp_path, {'policy': 'fixture', 'batch_size': 32}, samples(), {'checkpoint': 'fixture'})
+    initialize_run(tmp_path, {'policy': 'fixture', 'batch_size': BATCH_SIZE}, samples(), {'checkpoint': 'fixture'})
     assert before == (tmp_path / 'benchmark_run.json').read_bytes()
     with pytest.raises(ValueError, match='incompatible'):
         run_fixture(tmp_path, policy='changed')
@@ -48,22 +52,22 @@ def test_initialize_rejects_mismatch_before_overwrite_and_part_is_not_identity(t
 def test_batch_atomic_resume_corruption_and_final_batch(tmp_path):
     run = run_fixture(tmp_path)
     rows = input_rows(run)
-    cfg = CONFIG_SETS['first'][0]
-    write_selection(run, cfg, np.tile(np.arange(32,dtype=np.uint16), (35,1)),
-                    np.tile(np.arange(32,dtype=np.int32), (35,1)))
-    save_batch(run, cfg, 0, predictions(rows[:32]))
+    cfg = CONFIG_SETS['layers'][0]
+    write_selection(run, cfg, np.tile(np.arange(32,dtype=np.uint16), (67,1)),
+                    np.tile(np.arange(32,dtype=np.int32), (67,1)))
+    save_batch(run, cfg, 0, predictions(rows[:64]))
     assert set(load_batches(run, cfg)) == {0}
     with pytest.raises(ValueError, match='incomplete'):
         finalize_config(run, cfg)
     with pytest.raises(ValueError):
-        save_batch(run, cfg, 32, predictions(rows[32:34]))
-    save_batch(run, cfg, 32, predictions(rows[32:]))
+        save_batch(run, cfg, 64, predictions(rows[64:66]))
+    save_batch(run, cfg, 64, predictions(rows[64:]))
     # Idempotent publication must not add duplicates.
-    save_batch(run, cfg, 32, predictions(rows[32:]))
+    save_batch(run, cfg, 64, predictions(rows[64:]))
     result = finalize_config(run, cfg)
     metadata, records = validate_result(result, run)
-    assert len(records) == 35 and metadata['config'] == cfg
-    assert records[-1]['eval_id'] == 34
+    assert len(records) == 67 and metadata['config'] == cfg
+    assert records[-1]['eval_id'] == 66
     batch = tmp_path / 'configs' / cfg / 'batches' / '000000.json'
     payload = json.loads(batch.read_text())
     payload['records'][0]['prediction'] = 'tamper'
@@ -74,7 +78,7 @@ def test_batch_atomic_resume_corruption_and_final_batch(tmp_path):
 
 def test_selection_hash_and_config_identity(tmp_path):
     run = run_fixture(tmp_path, 2)
-    cfg = CONFIG_SETS['first'][0]
+    cfg = CONFIG_SETS['layers'][0]
     indices = np.tile(np.arange(32,dtype=np.uint16),(2,1))
     positions = np.tile(np.arange(32,dtype=np.int32),(2,1))
     write_selection(run, cfg, indices, positions)
@@ -99,7 +103,7 @@ def test_resume_keeps_identity_when_output_directory_moves(tmp_path):
 
 
 def test_cannot_publish_wrong_k_or_mislabeled_result(tmp_path):
-    run=run_fixture(tmp_path,2); cfg=CONFIG_SETS['first'][0]
+    run=run_fixture(tmp_path,2); cfg=CONFIG_SETS['layers'][0]
     with pytest.raises(ValueError):
         write_selection(run,cfg,np.tile(np.arange(2,dtype=np.uint16),(2,1)),np.tile(np.arange(2,dtype=np.int32),(2,1)))
     write_selection(run,'base')

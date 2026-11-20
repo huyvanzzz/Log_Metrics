@@ -22,6 +22,6 @@ Per-question prompt attention export, all 16,817 test questions and 30 layers (b
 [instructions](docs/smolvlm-prompt-attention-export.md) and
 [standalone Kaggle notebook](notebooks/kaggle_smolvlm_prompt_attention_export.ipynb).
 
-Single-layer Top-32 answer-quality benchmark (15 layers + base, two eight-config waves):
+Single-layer Top-32 answer-quality benchmark (15 layers split 7+8 across GPUs, separate base, fixed batch 64):
 [instructions](docs/smolvlm-topk-benchmark.md) and
 [standalone Kaggle notebook](notebooks/kaggle_smolvlm_topk_benchmark.ipynb).

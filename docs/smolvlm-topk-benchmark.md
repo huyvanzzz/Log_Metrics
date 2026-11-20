@@ -11,7 +11,7 @@ Notebook: [kaggle_smolvlm_topk_benchmark.ipynb](../notebooks/kaggle_smolvlm_topk
    `samples.jsonl`, `metadata.json`, `manifest.json`, `README.md`. Chỉ tensor riêng
    không đủ vì phải xác định đúng sample, prompt, checkpoint và camera order.
    Nếu bộ export còn ở working directory của session hiện tại thì không cần attach lại.
-5. Giữ `CONFIG_SET = 'first'` ở **cell 1**, chạy cells **1–8**.
+5. Giữ `CONFIG_SET = 'layers'` ở **cell 1**, chạy cells **1–8**.
 
 Nếu chỉ có một cache và một export phù hợp thì không cần sửa đường dẫn.
 `ATTENTION_INPUT=None` tự tìm export trong Input và thư mục output attention cũ.
@@ -24,22 +24,24 @@ Nếu Java chưa có trên Kaggle, cài OpenJDK 17 để chạy METEOR. Cell 4 c
 Top-K và smoke-test đủ bảy scorers trước khi sinh toàn bộ test. GPU numerical
 preflight chạy khi workers khởi động ở cell 5, mỗi GPU chỉ nạp checkpoint một lần.
 
-## Hai lượt, 16 cấu hình
+## 15 cấu hình layer và lượt base riêng
 
-| CONFIG_SET | GPU 0 luân phiên | GPU 1 luân phiên |
+| CONFIG_SET | GPU 0 chạy lần lượt | GPU 1 chạy lần lượt |
 |---|---|---|
-| `first` | 0, 1, 2, 9 | 10, 11, 15, 16 |
-| `second` | 17, 21, 22, 23 | 25, 26, 27, base |
+| `layers` | 0, 1, 2, 9, 10, 11, 15 | 16, 17, 21, 22, 23, 25, 26, 27 |
+| `base` | base (đủ 384 visual tokens) | không chạy |
 
-Mỗi cấu hình chạy đủ **16.817 câu test**, không phải một phần tư dữ liệu.
-Hai workers xử lý song song; trong từng worker, mỗi batch luân phiên bốn config
-và dùng chung connector/fused prompt đã tính. Không giữ bốn KV caches đồng thời.
+Mỗi cấu hình chạy đủ **16.817 câu test**, không chia câu hỏi giữa các config.
+Hai workers xử lý song song; mỗi GPU chạy hết toàn bộ test của một config rồi
+mới chuyển sang config tiếp theo theo thứ tự trong bảng. Mỗi config xử lý lần
+lượt các batch 64, mẻ cuối 49; không giữ KV cache giữa các config.
 
-Tám cấu hình đầu không có một lượt baseline đầy đủ. Preflight có kiểm tra allkeep
+Chế độ `layers` chạy 15 cấu hình, không chạy benchmark base. Preflight có kiểm tra allkeep
 trên vài mẫu, tối đa bốn generated tokens; đó không phải kết quả benchmark base.
 
-Lượt sau chỉ đổi **`CONFIG_SET = 'second'` ở cell 1**, rồi chạy lại notebook.
-Giữ OUTPUT cũ hoặc khôi phục nó. CONFIG_SET không thuộc generation identity của
+Lượt sau chỉ đổi **`CONFIG_SET = 'base'` ở cell 1**, rồi chạy lại notebook.
+Giữ OUTPUT của lượt batch 64 hoặc khôi phục nó. Lượt base chỉ cần một GPU.
+CONFIG_SET không thuộc generation identity của
 từng config, nên đổi lượt không làm mất tương thích kết quả trước.
 
 Nếu dùng session mới: tải ZIP kết quả lượt đầu lên Kaggle Input và giải nén,
@@ -62,8 +64,8 @@ experiment identity; không ghép metric/log beam-search cũ vào baseline mới
   Generated token đầu tiên khi được encode mang vị trí bằng độ dài prompt gốc.
 - Base dùng cùng adapter và giữ đủ 384 visual tokens.
 
-Tất cả dùng **greedy, max_new_tokens=512, FP32, không TF32/autocast, batch 32**.
-Mẻ cuối 17 mẫu, không drop_last. EOS có thể dừng sớm. Giới hạn 512 không bảo đảm
+Tất cả dùng **greedy, max_new_tokens=512, FP32, không TF32/autocast, batch 64**.
+Mẻ cuối 49 mẫu, không drop_last. EOS có thể dừng sớm. Giới hạn 512 không bảo đảm
 câu trả lời đúng hơn; các câu chạm giới hạn vẫn được chấm và thống kê riêng.
 
 **OOM là lỗi, không giảm batch.** Worker bị lỗi dừng, kết quả batch đã commit được
@@ -76,16 +78,20 @@ không có random/bottom-K, không đưa ra kết luận latency/FLOPs từ lư�
 
 ## Tiến độ, resume và source pull
 
-Output mặc định: `/kaggle/working/smolvlm_topk_benchmark_outputs/`.
+Batch đã đổi từ 32 sang 64: không resume hoặc gộp kết quả từ run batch 32.
+Notebook mặc định dùng OUTPUT mới; attention export cũ vẫn dùng được, không cần đo lại.
+
+Output mặc định: `/kaggle/working/smolvlm_topk_benchmark_outputs_batch64/`.
 
 - `auto`: tạo run mới, resume phần thiếu của lượt đang chọn, hoặc score nếu generation hoàn tất.
 - `measure`: yêu cầu OUTPUT mới.
 - `resume`: tiếp tục run cùng identity.
 - `score`: yêu cầu đủ predictions của lượt đang chọn; không tải model/attention/cache.
 
-Cell 6 có tqdm cho tám config, hai GPU và tổng. Chỉ tính một batch là hoàn thành
+Cell 6 có tqdm cho 15 config, hai GPU và tổng; chế độ base có một config và một GPU.
+Chỉ tính một batch là hoàn thành
 sau khi records được kiểm tra, ghi atomic và fsync. Resume xác minh checksum rồi
-giữ nguyên ranh giới batch 32; không trộn các mẫu còn thiếu thành batch khác.
+giữ nguyên ranh giới batch 64; không trộn các mẫu còn thiếu thành batch khác.
 
 Ngắt cell 6 chỉ ngắt chờ. Chạy lại cell 6 để reconnect với workers còn sống.
 Không pull khi workers đang chạy. Helper ở notebook mới và các notebook cũ đã
@@ -129,5 +135,5 @@ Cell 8 tạo ZIP kết quả kèm manifest hashes; không tự xóa dữ liệu 
 Tests bao phủ native/allkeep parity, pruned cached/full-prefix parity, mixed
 padding, Top-32 thật, vị trí gốc, scheduler, batch/OOM, resume, metadata imports,
 CPU scoring và notebook. Numerical preflight bắt buộc trước full generation trên
-Kaggle. Checkpoint thật, VRAM batch 32 và chạy đủ test cần xác minh trên GPU;
+Kaggle. Checkpoint thật, VRAM batch 64 và chạy đủ test cần xác minh trên GPU;
 tests CPU/fixtures không thay thế bằng chứng đó.

@@ -1,4 +1,4 @@
-"""Build the eight-cell Kaggle notebook for two eight-config benchmark waves."""
+"""Build the Kaggle notebook for fifteen layer configs and a separate base run."""
 import ast
 import json
 from pathlib import Path
@@ -9,14 +9,14 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def setup_cell():
     header=textwrap.dedent('''\
-        # 1. Push code first. For the later wave change ONLY CONFIG_SET to 'second'.
+        # 1. Push code first. Run the unpruned baseline separately with CONFIG_SET = 'base'.
         import os
         from pathlib import Path
         SOURCE_REPOSITORY = 'https://github.com/huyvanzzz/Log_Metrics.git'
         SOURCE_BRANCH = 'smolvlm-attention'
         SOURCE = Path('/kaggle/working/visualize-github-source')
-        OUTPUT = Path('/kaggle/working/smolvlm_topk_benchmark_outputs')
-        CONFIG_SET = 'first'  # first: 0,1,2,9,10,11,15,16; second: 17,21,22,23,25,26,27,base
+        OUTPUT = Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64')
+        CONFIG_SET = 'layers'  # layers: all 15 pruning configs (7 + 8); base: baseline only
         RUN_MODE = 'auto'  # auto, measure, resume, score
         os.environ['USE_TF'] = '0'
         os.environ['USE_FLAX'] = '0'
@@ -57,18 +57,20 @@ def setup_cell():
 def make_notebook():
     intro='''# SmolVLM base: single-layer Top-32 answer-quality benchmark
 
-Enable Internet and **T4 x2**. Attach the existing SmolVLM feature cache and the
+Enable Internet and **T4 x2** (base-only requires one GPU). Attach the existing SmolVLM feature cache and the
 **complete per-question attention export** (attention.npy, samples.jsonl,
 metadata.json, manifest.json, README.md), extracted as a Kaggle Input directory.
 Push the complete implementation before cell 1. No raw images are downloaded.
 
-Default first wave: **0,1,2,9,10,11,15,16**. Later change `CONFIG_SET` in cell 1 to
-`'second'`: **17,21,22,23,25,26,27,base**. Keep the same OUTPUT or restore it before
+Default `CONFIG_SET='layers'`: GPU 0 runs **0,1,2,9,10,11,15**; GPU 1 runs
+**16,17,21,22,23,25,26,27**. Each GPU finishes all test questions for one config
+before starting the next. Later change `CONFIG_SET` in cell 1 to `'base'` to run
+the unpruned baseline alone on GPU 0. Keep the same OUTPUT or restore it before
 starting a new session. Optional PREVIOUS_RESULTS reads a prior extracted ZIP
 without writing into Input and includes it in the combined comparison.
 
-Two resident workers, one model per GPU; each round-robins four configs. Every
-config processes all 16,817 test questions. **Fixed batch 32**, last batch 17;
+One resident model per active GPU, with two workers for layers and one for base. Every
+config processes all 16,817 test questions. **Fixed batch 64**, last batch 49;
 OOM stops the affected worker, never reduces batch. Greedy, max 512 new tokens,
 FP32/no TF32, EOS may stop earlier. All non-visual tokens are retained. Top-32
 is global over six cameras at one ranking layer; actual deletion occurs before
@@ -81,20 +83,22 @@ Keep the full OUTPUT for partial-generation resume. ZIP exports complete results
 and inputs/provenance, excludes large artifacts and partial batch journals.
 
 Quality metrics only: BLEU-1/2/3/4, METEOR, ROUGE-L, CIDEr. No timing claims while
-GPUs are shared. Base is measured in wave two; no old beam-search baseline is reused.
+GPUs are shared. Base is measured separately; no old beam-search baseline is reused.
+Batch-32 run state is incompatible: this notebook defaults to a new batch-64 OUTPUT.
 '''
     sources=[setup_cell(),textwrap.dedent('''\
         # 2. These optional paths are normally discovered automatically.
-        BATCH_SIZE = 32  # Fixed. OOM is an error; no automatic reduction.
-        if BATCH_SIZE != 32:
-            raise ValueError('This experiment requires batch 32 for every config.')
+        BATCH_SIZE = 64  # Fixed. OOM is an error; no automatic reduction.
+        from smolvlm_topk_benchmark.config import BATCH_SIZE as REQUIRED_BATCH_SIZE
+        if BATCH_SIZE != REQUIRED_BATCH_SIZE:
+            raise ValueError(f'This experiment requires batch {REQUIRED_BATCH_SIZE} for every config.')
         ATTENTION_INPUT = None  # Extracted complete attention export; set if multiple are found.
         CACHE_INPUT = ''  # Existing mounted cache; set if multiple matches are found.
         PREPARED_INPUT = None  # Existing manifest/train/val/test; otherwise pinned HF download.
         PREVIOUS_RESULTS = None  # Optional extracted prior result ZIP root for combined scoring.
         from smolvlm_topk_benchmark.runtime import prepare_run, launch_workers, wait_workers
         from smolvlm_topk_benchmark.runtime import score_results, bundle_results
-        print(dict(batch=32, greedy=True, max_new_tokens=512, set=CONFIG_SET, mode=BOOT_MODE))
+        print(dict(batch=BATCH_SIZE, greedy=True, max_new_tokens=512, set=CONFIG_SET, mode=BOOT_MODE))
         '''),textwrap.dedent('''\
         # 3. Locate artifacts only for new/partial generation; no model weights are loaded here.
         ARTIFACTS = None
@@ -115,7 +119,7 @@ GPUs are shared. Base is measured in wave two; no old beam-search baseline is re
                 source_commit=SOURCE_COMMIT, source_sha256=SOURCE_SHA256)
         print(RUN_CONFIG)
         '''),textwrap.dedent('''\
-        # 5. Launch two resident GPU workers, each with four full-test configs.
+        # 5. Layers: GPU 0 runs seven configs, GPU 1 eight; sequential per GPU. Base: GPU 0 only.
         if BOOT_MODE != 'score':
             launch_workers(RUN_CONFIG, CONFIG_SET)
         '''),textwrap.dedent('''\
