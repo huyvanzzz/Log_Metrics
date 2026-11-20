@@ -4,8 +4,10 @@ from .generation import (SharedCausalLM, compact_prompt, decode_sequences,
                          fuse_batch, generate_compacted, greedy_config)
 
 
-def _close(actual, expected):
-    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-4)
+def _close(actual, expected, *, batched=False):
+    # Different batch shapes can select different FP32 CUDA kernels. Keep the
+    # native adapter check strict; token generation parity stays exact below.
+    torch.testing.assert_close(actual, expected, atol=1e-5 if batched else 1e-6, rtol=1e-4)
 
 
 def _last_logits(adapter, compact):
@@ -81,10 +83,10 @@ def numerical_preflight(model, rows, build_batch, selection_rows, *, progress=No
     logits = _last_logits(adapter, compact)
     records = generate_compacted(adapter, compact, tokenizer, config)
     for slot, index in enumerate(probes):
-        _close(logits[slot:slot + 1], singles[index][0])
+        _close(logits[slot:slot + 1], singles[index][0], batched=True)
         if records[slot] != singles[index][1]:
             raise AssertionError('batched generation differs from singleton generation')
     if any(parameter._version != version or parameter.data_ptr() != pointer for parameter, version, pointer in parameters):
         raise AssertionError('preflight changed native parameters')
     return dict(passed=True, probe_row_indices=row_indices, pruned_config=active,
-                max_new_tokens=4, atol=1e-6, rtol=1e-4)
+                max_new_tokens=4, atol=1e-6, batch_atol=1e-5, rtol=1e-4)

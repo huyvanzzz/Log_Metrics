@@ -22,3 +22,18 @@ def test_tiny_preflight_native_pruned_and_batch(monkeypatch):
     assert batch_sizes == [1, 1, 2]
     import torch
     assert all(torch.equal(parameter, snapshots[name]) for name, parameter in model.named_parameters())
+import pytest
+import torch
+from smolvlm_topk_benchmark.preflight import _close
+
+
+def test_batch_fp32_roundoff_keeps_strict_native_and_large_error_checks():
+    expected = torch.tensor([[0.0277743]], dtype=torch.float32)
+    actual = expected + 4.71808e-6
+    _close(actual, expected, batched=True)
+    with pytest.raises(AssertionError):
+        _close(actual, expected)
+    with pytest.raises(AssertionError):
+        _close(expected + 1e-3, expected, batched=True)
+    with pytest.raises(AssertionError):
+        _close(torch.full_like(expected, float('nan')), expected, batched=True)
