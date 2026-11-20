@@ -17,3 +17,7 @@ DINOv2–T5 unpruned base, decoder-start cross-attention on all test questions:
 SmolVLM base causal perturbation and exact-phrase bbox localization on frozen test data:
 [instructions](docs/smolvlm-probing.md) and
 [standalone Kaggle notebook](notebooks/kaggle_smolvlm_causal_localization.ipynb).
+
+Per-question prompt attention export, all 16,817 test questions and 30 layers (base, initial batch 32/GPU):
+[instructions](docs/smolvlm-prompt-attention-export.md) and
+[standalone Kaggle notebook](notebooks/kaggle_smolvlm_prompt_attention_export.ipynb).

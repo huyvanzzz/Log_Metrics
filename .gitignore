@@ -25,3 +25,4 @@ attention_outputs/
 generated_attention_outputs/
 dinov2_attention_outputs/
 smolvlm_probing_outputs/
+smolvlm_prompt_attention_outputs/

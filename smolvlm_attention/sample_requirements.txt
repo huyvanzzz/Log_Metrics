@@ -1,0 +1,3 @@
+-r ../smolvlm_inference/requirements.txt
+tqdm>=4.66,<5
+filelock>=3.13,<4
