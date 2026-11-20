@@ -37,12 +37,12 @@ def test_oom_is_not_retried_or_rebatched(tmp_path):
 
 def test_mode_is_separate_for_each_config_set(tmp_path):
     from smolvlm_topk_benchmark.runtime import resolve_run_mode
-    assert resolve_run_mode(tmp_path,'layers')=='measure'
+    assert resolve_run_mode(tmp_path,'first')=='measure'
     run=run_fixture(tmp_path)
-    assert resolve_run_mode(tmp_path,'layers')=='resume'
-    assert resolve_run_mode(tmp_path,'base')=='resume'
+    assert resolve_run_mode(tmp_path,'first')=='resume'
+    assert resolve_run_mode(tmp_path,'second')=='resume'
     with pytest.raises(ValueError,match='incomplete'):
-        resolve_run_mode(tmp_path,'layers','score')
+        resolve_run_mode(tmp_path,'first','score')
 
 
 def test_portable_runtime_import_does_not_load_torch():
@@ -56,25 +56,25 @@ def test_notebook_and_embedded_guard():
     cells=[''.join(c['source']) for c in nb['cells'] if c['cell_type']=='code']
     assert len(cells)==8
     for c in cells:ast.parse(c)
-    assert "CONFIG_SET = 'layers'" in cells[0]+cells[1]
+    assert "CONFIG_SET = 'first'" in cells[0]+cells[1]
     assert 'smolvlm_topk_benchmark.runtime' in cells[0]
     assert 'BATCH_SIZE = 64' in cells[1]
 
 
-def test_fifteen_layers_then_separate_base_scoring_and_readonly_merge(tmp_path,monkeypatch):
+def test_two_waves_scoring_and_readonly_merge(tmp_path,monkeypatch):
     import numpy as np
     import zipfile
     import smolvlm_topk_benchmark.runtime as runtime
     from smolvlm_topk_benchmark.config import CONFIG_SETS
     from smolvlm_topk_benchmark.scoring import METRICS
     from smolvlm_topk_benchmark.state import write_selection,save_batch,input_rows,digest
-    first=run_fixture(tmp_path/'layers',2)
+    first=run_fixture(tmp_path/'first',2)
     def fill(run,names):
         for name in names:
             if name=='base':write_selection(run,name)
             else:write_selection(run,name,np.tile(np.arange(32,dtype=np.uint16),(2,1)),np.tile(np.arange(32,dtype=np.int32),(2,1)))
             save_batch(run,name,0,predictions(input_rows(run)))
-    fill(first,CONFIG_SETS['layers'])
+    fill(first,CONFIG_SETS['first'])
     calls=[]
     def scorer(output,*,input_path=None,expected_count=None):
         if input_path is None:
@@ -90,27 +90,27 @@ def test_fifteen_layers_then_separate_base_scoring_and_readonly_merge(tmp_path,m
         return result
     monkeypatch.setattr(runtime,'_scorer_command',scorer)
     monkeypatch.setattr(runtime,'_scoring_fingerprint',lambda value:'fixture-scorer')
-    summary=runtime.score_results(first['config_path'],'layers')
-    assert len(summary['results'])==15 and not summary['baseline_available']
+    summary=runtime.score_results(first['config_path'],'first')
+    assert len(summary['results'])==8 and not summary['baseline_available']
     assert all(r['delta_vs_base'] is None for r in summary['results'])
-    runtime.score_results(first['config_path'],'layers')
-    assert len(calls)==15  # Valid score cache avoids recomputation.
+    runtime.score_results(first['config_path'],'first')
+    assert len(calls)==8  # Valid score cache avoids recomputation.
     archive=runtime.bundle_results(first['config_path'])
     previous=tmp_path/'prior'; previous.mkdir()
     with zipfile.ZipFile(archive) as z:
         assert not any('attention.npy' in n or 'batches/' in n for n in z.namelist())
         z.extractall(previous)
     before={p.relative_to(previous):digest(p) for p in previous.rglob('*') if p.is_file()}
-    second=run_fixture(tmp_path/'base',2)
-    fill(second,CONFIG_SETS['base'])
-    combined=runtime.score_results(second['config_path'],'base',previous_results=previous)
+    second=run_fixture(tmp_path/'second',2)
+    fill(second,CONFIG_SETS['second'])
+    combined=runtime.score_results(second['config_path'],'second',previous_results=previous)
     assert len(combined['results'])==16 and combined['baseline_available']
     assert combined['results'][0]['delta_vs_base']['CIDEr']==pytest.approx(-.3)
     assert before=={p.relative_to(previous):digest(p) for p in previous.rglob('*') if p.is_file()}
-    assert runtime.resolve_run_mode(tmp_path/'base','base')=='score'
+    assert runtime.resolve_run_mode(tmp_path/'second','second')=='score'
 
 
-@pytest.mark.parametrize('config_set,worker_count', [('layers',2), ('base',1)])
+@pytest.mark.parametrize('config_set,worker_count', [('first',2), ('second',2)])
 def test_launch_lock_duplicate_workers_and_wait_exit_race(tmp_path,monkeypatch,config_set,worker_count):
     import torch
     from filelock import FileLock,Timeout

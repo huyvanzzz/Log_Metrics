@@ -28,13 +28,11 @@ def predictions(rows):
 
 def test_registry_and_same_dataset_for_every_config():
     assert BATCH_SIZE == 64
-    assert [config_layer(c) for c in CONFIG_SETS['layers']] == [0,1,2,9,10,11,15,16,17,21,22,23,25,26,27]
-    assert CONFIG_SETS['base'] == ('base',)
-    assert len(worker_configs('layers', 0)) == 7
-    assert len(worker_configs('layers', 1)) == 8
-    assert worker_configs('layers', 0) + worker_configs('layers', 1) == CONFIG_SETS['layers']
-    assert worker_configs('base', 0) == ('base',)
-    assert worker_configs('base', 1) == ()
+    assert [config_layer(c) for c in CONFIG_SETS['first']] == [0,1,2,9,10,11,15,16]
+    assert [config_layer(c) for c in CONFIG_SETS['second']] == [17,21,22,23,25,26,27,None]
+    for config_set in ('first','second'):
+        assert len(worker_configs(config_set, 0)) == len(worker_configs(config_set, 1)) == 4
+        assert worker_configs(config_set, 0) + worker_configs(config_set, 1) == CONFIG_SETS[config_set]
 
 
 def test_initialize_rejects_mismatch_before_overwrite_and_part_is_not_identity(tmp_path):
@@ -52,7 +50,7 @@ def test_initialize_rejects_mismatch_before_overwrite_and_part_is_not_identity(t
 def test_batch_atomic_resume_corruption_and_final_batch(tmp_path):
     run = run_fixture(tmp_path)
     rows = input_rows(run)
-    cfg = CONFIG_SETS['layers'][0]
+    cfg = CONFIG_SETS['first'][0]
     write_selection(run, cfg, np.tile(np.arange(32,dtype=np.uint16), (67,1)),
                     np.tile(np.arange(32,dtype=np.int32), (67,1)))
     save_batch(run, cfg, 0, predictions(rows[:64]))
@@ -78,7 +76,7 @@ def test_batch_atomic_resume_corruption_and_final_batch(tmp_path):
 
 def test_selection_hash_and_config_identity(tmp_path):
     run = run_fixture(tmp_path, 2)
-    cfg = CONFIG_SETS['layers'][0]
+    cfg = CONFIG_SETS['first'][0]
     indices = np.tile(np.arange(32,dtype=np.uint16),(2,1))
     positions = np.tile(np.arange(32,dtype=np.int32),(2,1))
     write_selection(run, cfg, indices, positions)
@@ -103,7 +101,7 @@ def test_resume_keeps_identity_when_output_directory_moves(tmp_path):
 
 
 def test_cannot_publish_wrong_k_or_mislabeled_result(tmp_path):
-    run=run_fixture(tmp_path,2); cfg=CONFIG_SETS['layers'][0]
+    run=run_fixture(tmp_path,2); cfg=CONFIG_SETS['first'][0]
     with pytest.raises(ValueError):
         write_selection(run,cfg,np.tile(np.arange(2,dtype=np.uint16),(2,1)),np.tile(np.arange(2,dtype=np.int32),(2,1)))
     write_selection(run,'base')

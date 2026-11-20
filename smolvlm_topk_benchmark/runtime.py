@@ -1,4 +1,4 @@
-"""Prepare, launch, reconnect, score and bundle fifteen layers or a separate base."""
+"""Prepare, launch, reconnect, score and bundle two eight-config waves with sequential configs per GPU."""
 import csv
 import importlib.metadata
 import io
@@ -50,9 +50,9 @@ def _config_complete(run,name):
     return set(batches)==set(range(0,run['count'],BATCH_SIZE))
 
 
-def resolve_run_mode(output,config_set='layers',mode='auto'):
+def resolve_run_mode(output,config_set='first',mode='auto'):
     if config_set not in CONFIG_SETS or mode not in ('auto','measure','resume','score'):
-        raise ValueError('Select layers/base and auto/measure/resume/score')
+        raise ValueError('Select first/second and auto/measure/resume/score')
     path=Path(output)/'benchmark_run.json'
     if not path.exists():
         if mode in ('score','resume'):raise FileNotFoundError('No existing benchmark run')
@@ -105,7 +105,7 @@ def _scorer_command(output,*,input_path=None,expected_count=None):
     return result
 
 
-def prepare_run(output,*,config_set='layers',mode='auto',attention_input=None,cache_input_dir='',prepared_dir=None,
+def prepare_run(output,*,config_set='first',mode='auto',attention_input=None,cache_input_dir='',prepared_dir=None,
                 artifacts=None,source_commit=None,source_sha256=None):
     output=Path(output).resolve(); resolved=resolve_run_mode(output,config_set,mode)
     if resolved=='score':return output/'benchmark_run.json'
@@ -157,7 +157,7 @@ def _pid_alive(path):
     return path.exists() and pid_is_alive(json.loads(path.read_text())['pid'])
 
 
-def launch_workers(config_path,config_set='layers'):
+def launch_workers(config_path,config_set='first'):
     path=Path(config_path).resolve();run=read_run(path);assert_compatible(run)
     import torch
     workers=active_workers(config_set)
@@ -194,7 +194,7 @@ def launch_workers(config_path,config_set='layers'):
     return config_path
 
 
-def wait_workers(config_path,config_set='layers',*,poll_seconds=1):
+def wait_workers(config_path,config_set='first',*,poll_seconds=1):
     from tqdm.auto import tqdm
     path=Path(config_path).resolve();run=read_run(path);logs=Path(run['output_root'])/'logs'
     bars={n:tqdm(total=run['count'],desc=n,position=i,unit='question') for i,n in enumerate(CONFIG_SETS[config_set])}
@@ -238,7 +238,7 @@ def _scoring_fingerprint(identity):
         tokenization=identity['tokenization'],meteor_sanitization=identity['meteor_sanitization']))
 
 
-def score_results(config_path,config_set='layers',*,previous_results=None):
+def score_results(config_path,config_set='first',*,previous_results=None):
     from tqdm.auto import tqdm
     run=read_run(config_path);root=Path(run['output_root'])
     for name in CONFIG_SETS[config_set]:

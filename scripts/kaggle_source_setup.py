@@ -23,7 +23,8 @@ def ensure_no_workers(output_roots):
     roots = set(map(Path, output_roots)) | {Path('/kaggle/working/smolvlm_probing_outputs'),
                                           Path('/kaggle/working/smolvlm_prompt_attention_outputs'),
                                           Path('/kaggle/working/smolvlm_topk_benchmark_outputs'),
-                                          Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64')}
+                                          Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64'),
+                                          Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64_two_waves')}
     for root in roots:
         for path in (Path(root) / 'logs').glob('*.pid.json'):
             pid = json.loads(path.read_text(encoding='utf-8'))['pid']

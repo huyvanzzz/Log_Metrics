@@ -1,4 +1,4 @@
-"""Build the Kaggle notebook for fifteen layer configs and a separate base run."""
+"""Build two eight-config waves, four sequential full-test configs per GPU."""
 import ast
 import json
 from pathlib import Path
@@ -9,14 +9,14 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def setup_cell():
     header=textwrap.dedent('''\
-        # 1. Push code first. Run the unpruned baseline separately with CONFIG_SET = 'base'.
+        # 1. Push code first. For the later wave change ONLY CONFIG_SET to 'second'.
         import os
         from pathlib import Path
         SOURCE_REPOSITORY = 'https://github.com/huyvanzzz/Log_Metrics.git'
         SOURCE_BRANCH = 'smolvlm-attention'
         SOURCE = Path('/kaggle/working/visualize-github-source')
-        OUTPUT = Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64')
-        CONFIG_SET = 'layers'  # layers: all 15 pruning configs (7 + 8); base: baseline only
+        OUTPUT = Path('/kaggle/working/smolvlm_topk_benchmark_outputs_batch64_two_waves')
+        CONFIG_SET = 'first'  # first: 0,1,2,9,10,11,15,16; second: 17,21,22,23,25,26,27,base
         RUN_MODE = 'auto'  # auto, measure, resume, score
         os.environ['USE_TF'] = '0'
         os.environ['USE_FLAX'] = '0'
@@ -57,19 +57,20 @@ def setup_cell():
 def make_notebook():
     intro='''# SmolVLM base: single-layer Top-32 answer-quality benchmark
 
-Enable Internet and **T4 x2** (base-only requires one GPU). Attach the existing SmolVLM feature cache and the
+Enable Internet and **T4 x2**. Attach the existing SmolVLM feature cache and the
 **complete per-question attention export** (attention.npy, samples.jsonl,
 metadata.json, manifest.json, README.md), extracted as a Kaggle Input directory.
 Push the complete implementation before cell 1. No raw images are downloaded.
 
-Default `CONFIG_SET='layers'`: GPU 0 runs **0,1,2,9,10,11,15**; GPU 1 runs
-**16,17,21,22,23,25,26,27**. Each GPU finishes all test questions for one config
-before starting the next. Later change `CONFIG_SET` in cell 1 to `'base'` to run
-the unpruned baseline alone on GPU 0. Keep the same OUTPUT or restore it before
+Default `CONFIG_SET='first'`: GPU 0 runs **0,1,2,9**; GPU 1 runs **10,11,15,16**.
+Each GPU finishes all test questions for one config before starting the next.
+Later set `CONFIG_SET='second'`: GPU 0 runs **17,21,22,23**;
+GPU 1 runs **25,26,27,base**. Base runs last on GPU 1, only in the second wave.
+Keep the same OUTPUT or restore it before
 starting a new session. Optional PREVIOUS_RESULTS reads a prior extracted ZIP
 without writing into Input and includes it in the combined comparison.
 
-One resident model per active GPU, with two workers for layers and one for base. Every
+Two resident workers, one model per GPU and four sequential configs each. Every
 config processes all 16,817 test questions. **Fixed batch 64**, last batch 49;
 OOM stops the affected worker, never reduces batch. Greedy, max 512 new tokens,
 FP32/no TF32, EOS may stop earlier. All non-visual tokens are retained. Top-32
@@ -83,8 +84,8 @@ Keep the full OUTPUT for partial-generation resume. ZIP exports complete results
 and inputs/provenance, excludes large artifacts and partial batch journals.
 
 Quality metrics only: BLEU-1/2/3/4, METEOR, ROUGE-L, CIDEr. No timing claims while
-GPUs are shared. Base is measured separately; no old beam-search baseline is reused.
-Batch-32 run state is incompatible: this notebook defaults to a new batch-64 OUTPUT.
+GPUs are shared. Base is measured in wave two; no old beam-search baseline is reused.
+Prior batch-32 or 15-config scheduling state is incompatible: use this new OUTPUT.
 '''
     sources=[setup_cell(),textwrap.dedent('''\
         # 2. These optional paths are normally discovered automatically.
@@ -119,7 +120,7 @@ Batch-32 run state is incompatible: this notebook defaults to a new batch-64 OUT
                 source_commit=SOURCE_COMMIT, source_sha256=SOURCE_SHA256)
         print(RUN_CONFIG)
         '''),textwrap.dedent('''\
-        # 5. Layers: GPU 0 runs seven configs, GPU 1 eight; sequential per GPU. Base: GPU 0 only.
+        # 5. Two workers; each GPU finishes four configs sequentially. Base is in wave two only.
         if BOOT_MODE != 'score':
             launch_workers(RUN_CONFIG, CONFIG_SET)
         '''),textwrap.dedent('''\
