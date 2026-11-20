@@ -21,3 +21,7 @@ SmolVLM base causal perturbation and exact-phrase bbox localization on frozen te
 Per-question prompt attention export, all 16,817 test questions and 30 layers (base, initial batch 32/GPU):
 [instructions](docs/smolvlm-prompt-attention-export.md) and
 [standalone Kaggle notebook](notebooks/kaggle_smolvlm_prompt_attention_export.ipynb).
+
+Single-layer Top-32 answer-quality benchmark (15 layers + base, two eight-config waves):
+[instructions](docs/smolvlm-topk-benchmark.md) and
+[standalone Kaggle notebook](notebooks/kaggle_smolvlm_topk_benchmark.ipynb).
