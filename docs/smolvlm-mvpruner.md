@@ -1,0 +1,34 @@
+# SmolVLM MVPruner full-test evaluation
+
+Open `notebooks/kaggle_smolvlm_mvpruner_test.ipynb` on Kaggle with Internet, Java and two GPUs. Attach the public `huyhuy12334/cache-smolvlm` Input. The notebook resolves it once without copying or changing it. It downloads only prepared metadata from `huyvanzzz/prepared_data` at `d2a6914f681dbb9148c4ac11e6fa92452010506e` and `finetune_best.pt` from `huyvanzzz/smolvlm256M_base` at `f9d4e9a4d704078f9e7f39f061d13602cf251c78`.
+
+The two fixed JSON configs use zero-based decoder layer indices 2 and 15, six canonical camera views, stage-one keep 196, stage-two keep 32, batch 64, workers 0 and at most 512 generated tokens. Each independent process sees one GPU through CUDA_VISIBLE_DEVICES. Both evaluate the entire validated 16,817-row test split, including the smaller final batch. FP32, disabled autocast and TF32, highest float32 matmul precision, greedy decoding, one beam, no sampling and repetition penalty 1 are mandatory. There is no training, baseline-session change or OOM retry.
+
+Stage 1 uses projected vision states and native question embeddings: dot products, softmax across the 64 tokens of each camera, then mean over question tokens. DRA/cosine-diversity and CCTS keep exactly 196 source tokens. Stage 2 averages question-to-vision attention over native heads and question positions, computes camera weights `Nc * (1 + softmax(minmax(mean_score_c)) - Nc/196)`, allocates exactly 32 slots and takes stable per-camera raw-score Top-K. Question spans come from native tokenizer offsets; ground-truth answers never enter scoring. This is a training-free adaptation, using upstream relevance with the repository's exact bounded integer allocator, rather than a claim of bitwise upstream reproduction. Upstream reference: MVPruner commit `53ecc443fd7664a92e71ab6213f5611ef1ec5c7d`.
+
+The native SDPA block output is unchanged. A temporary Q/K capture computes only question rows for Stage 2, including native RoPE, GQA, causal and padding masks. Pruning happens once during prefill. Source RoPE positions are preserved; generated-token positions continue from the original prompt length. Lower-layer KV caches retain 196 visual tokens; upper-layer caches retain 32. The greedy loop uses layer-local cache lengths/masks instead of sending heterogeneous caches back into generic generation. Finished samples add only padding while other samples continue. The dedicated recomputation test freezes the original selections and checks cached decoding against full-history computation.
+
+The parent loads processor/config metadata without model weights and validates cache identity, metadata/prepared hashes, dense coverage, file sizes and full feature finiteness in bounded chunks, with progress throttled to phase changes, five-second intervals and completion. A receipt outside the data records the fingerprint, identity, resolved file paths, sizes, nanosecond modification times and metadata hashes. Each worker requires the same receipt-bound files, repeats metadata/hash/coverage checks and checks every loaded feature batch for finite values. It skips only the already completed whole-cache finiteness scan. Keep the mounted cache immutable for the complete run; do not reuse a receipt after modifying files.
+
+Before any GPU worker starts, dependency and Java preflight exercises BLEU, METEOR, ROUGE-L and CIDEr. Install `smolvlm_inference/requirements-pruning-metrics.txt` only in the evaluation environment. Metrics use the source evaluation scorer inputs directly with no PTB tokenizer, text normalization or fallback. Predictions and references receive only outer `.strip()`. A metric failure propagates and preserves flushed prediction JSONL.
+
+The launch command runs both stress processes concurrently first. Stress selects the 64 unique test rows with longest expanded prompts using collator prompt metadata without feature loading, runs normal greedy generation, then ignores EOS for a forced 512-step KV-cache diagnostic. Stress creates no predictions or metrics. If both succeed, two full test processes run concurrently; metrics then run sequentially in the parent. Any failure reports stage, GPU, config and CUDA memory, with no automatic precision or batch changes.
+
+Per-config output directories contain flushed `predictions.jsonl` (eval_id, sample_id, question, reference, prediction), `metadata.json`, first-batch `debug.json`, stress diagnostics, progress logs and final `metrics.json` and `metrics_display.json` (source display policy: multiply by 100 and round to six decimal places). Coverage validation rejects missing or duplicate test IDs. The archive includes only these small artifacts, never input data or checkpoints. Long-running jobs append `progress.jsonl` per batch with elapsed time, throughput, ETA and CUDA memory. The parent prints GPU/config status and the latest batch every 30 seconds. Stress records allocated/reserved/peak allocated/peak reserved/free/total memory and GPU name for both generation modes; these measurements do not guarantee memory headroom. Inspect the per-config logs when a subprocess fails.
+
+CLI entry points:
+
+```sh
+python -m smolvlm_inference.pruning_run preflight
+python -m smolvlm_inference.pruning_run validate --cache CACHE --prepared PREPARED --receipt RECEIPT
+python -m smolvlm_inference.pruning_run launch --cache CACHE --prepared PREPARED --receipt RECEIPT --checkpoint CHECKPOINT --output OUTPUT
+python -m smolvlm_inference.pruning_run metrics --output OUTPUT/layer_index_2
+```
+
+`stress` and `test` are worker entry points and additionally require `--config configs/mvpruner_layer_index_2.json` (or 15). They require exactly the validated full test dataset. No full GPU evaluation or public data/weights download is part of local unit verification.
+
+Greedy results are not a controlled pruning comparison against older beam-3 metrics. No baseline full-test job is launched automatically. CPU tests validate implementation only; batch-64 GPU fit and model quality require the notebook's real Kaggle run. Changes must be pushed to `smolvlm-attention` before the notebook can clone them from GitHub.
+
+## Implementation verification
+
+The stable full repository suite passed: **347 tests** in 93.93 seconds, using the local Visualize environment (PyTorch 2.15.0 CPU, Transformers 4.46.3). Coverage includes identity greedy parity at both block indices, native eager attention-score parity, frozen-selection full-history versus cached decoding, batch 64 on a tiny model, mixed EOS completion, unchanged weights, native question offsets, bounded budgets and CPU checkpoint/cache/generation lifecycle. The real Java/METEOR/BLEU/ROUGE/CIDEr preflight also passed. Python/notebook syntax and `git diff --check` were checked. No real-checkpoint GPU stress, full test evaluation, performance or quality claim is established by these CPU results.

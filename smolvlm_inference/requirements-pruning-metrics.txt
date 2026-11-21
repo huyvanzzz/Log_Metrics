@@ -1,0 +1,2 @@
+# Dedicated pruning evaluation dependency; install only in the evaluation environment.
+pycocoevalcap==1.2

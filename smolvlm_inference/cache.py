@@ -40,7 +40,7 @@ def records(path):
 
 
 class FeatureCache:
-    def __init__(self, directory, prepared_directory, identity, *, progress=None):
+    def __init__(self, directory, prepared_directory, identity, *, progress=None, full=True):
         self.directory = Path(directory)
         self.prepared = Path(prepared_directory)
         manifest = json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
@@ -87,7 +87,7 @@ class FeatureCache:
         flat = self.array.reshape(-1)
         if progress:
             progress(dict(stage='features', completed=0, total=flat.nbytes))
-        for offset in range(0, flat.size, 1024 * 1024):
+        for offset in range(0, flat.size if full else 0, 1024 * 1024):
             if not np.isfinite(flat[offset:offset + 1024 * 1024]).all():
                 raise ValueError('Cache contains nonfinite features')
             if progress:

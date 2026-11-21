@@ -1,0 +1,11 @@
+{
+  "stage1_keep": 196,
+  "stage2_keep": 32,
+  "batch_size": 64,
+  "max_new_tokens": 512,
+  "num_workers": 0,
+  "num_beams": 1,
+  "do_sample": false,
+  "repetition_penalty": 1.0,
+  "stage2_layer_index": 2
+}
