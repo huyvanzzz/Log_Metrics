@@ -33,10 +33,8 @@ def load_config(path=DEFAULT_CONFIG):
 
 
 def shard_rows(count, rank):
-    if rank not in (0, 1) or count < 0:
-        raise ValueError('Two shards and a nonnegative count required')
-    boundary = (count + 1) // 2
-    return np.arange(0 if rank == 0 else boundary, boundary if rank == 0 else count, dtype=np.int64)
+    from .schedule import rank_rows
+    return rank_rows(count, rank)
 
 
 def required_space(counts, visual_tokens=384):
@@ -51,9 +49,8 @@ def compatible_run(previous, current):
 
 
 def process_pending(store, lengths, measure, *, progress=None):
-    """Fixed 64, except final partial batch; no OOM catch/retry or dropped samples."""
-    pending = store.pending_rows
-    ordered = pending[np.lexsort((pending, -np.asarray(lengths)[pending].astype(np.int64)))]
+    """Legacy serial test helper; preserve supplied row order, never length-sort extraction."""
+    ordered = store.pending_rows
     for offset in range(0, len(ordered), BATCH_SIZE):
         rows = ordered[offset:offset + BATCH_SIZE]
         values = measure(rows)
@@ -63,7 +60,7 @@ def process_pending(store, lengths, measure, *, progress=None):
 
 
 def _sources():
-    names = ['attention.py', 'prompts.py', 'storage.py', 'runtime.py']
+    names = ['attention.py', 'prompts.py', 'storage.py', 'runtime.py', 'loader.py', 'schedule.py']
     paths = [Path(__file__).parent / name for name in names]
     paths += [ROOT / name for name in ('smolvlm_attention/data.py', 'smolvlm_attention/collector.py',
               'smolvlm_inference/model.py', 'smolvlm_inference/text.py', 'smolvlm_inference/cache.py',
@@ -123,6 +120,8 @@ def prepare(output_root, *, config=DEFAULT_CONFIG, mode='new', cache_input='', p
     from smolvlm_attention.data import open_validated_cache
     from smolvlm_inference.model import MODEL_ID, MODEL_REVISION, _configure_processor, _geometry, processor_policy
     from .prompts import prepare_prompt_store
+    from .schedule import prepare_schedule
+    from .loader import prepare_loader_receipt
     cfg = load_config(config)
     if (MODELS['base']['repo'] != cfg['checkpoint_repo'] or MODELS['base']['revision'] != cfg['checkpoint_revision']
             or PREPARED_REPO != cfg['prepared_repo'] or PREPARED_REVISION != cfg['prepared_revision']
@@ -141,6 +140,8 @@ def prepare(output_root, *, config=DEFAULT_CONFIG, mode='new', cache_input='', p
             raise ValueError('Run already exists; select resume or a fresh output directory')
         if not run_path.exists() and mode == 'resume':
             raise FileNotFoundError('Resume needs run.json and partial artifacts')
+        if run_path.exists() and json.loads(run_path.read_text()).get('version') != 2:
+            raise ValueError('Old teacher run cannot resume with loader scheduling; use a new output directory')
         artifacts = resolve_artifacts(output / 'internal', cache_input, prepared_dir)
         receipt = validate_teacher_cache(artifacts['cache_dir'], artifacts['prepared_dir'],
                                  output / 'internal' / 'validation', cfg['cache_fingerprint'])
@@ -173,7 +174,12 @@ def prepare(output_root, *, config=DEFAULT_CONFIG, mode='new', cache_input='', p
             free_bytes=shutil.disk_usage(output).free)), flush=True)
         if shutil.disk_usage(output).free < space['recommended_free_bytes']:
             raise OSError('Insufficient remaining space after prompt preparation; prompt artifacts are preserved')
-        identity = dict(format='smolvlm_teacher_log_scores_v1', protocol=cfg,
+        schedule_dir = output / 'internal' / 'schedule'
+        schedule = prepare_schedule(schedule_dir, cfg['splits'], BATCH_SIZE, cfg['seed'])
+        prompt_paths = {s: str((output / 'internal' / 'prompts' / s).resolve()) for s in stores}
+        loader_receipt = prepare_loader_receipt(output / 'internal' / 'validation' / 'loader_inputs.json',
+                                                receipt, prompt_paths)
+        identity = dict(format='smolvlm_teacher_log_scores_v1', protocol=cfg, schedule=schedule,
                         checkpoint_sha256=digest(artifacts['model']['checkpoint']),
                         native_model=MODEL_ID, native_revision=MODEL_REVISION,
                         model=expected, cache_fingerprint=reader.manifest['fingerprint'],
@@ -183,9 +189,10 @@ def prepare(output_root, *, config=DEFAULT_CONFIG, mode='new', cache_input='', p
                         prepared_hashes=reader.manifest['prepared_hashes'],
                         prompts={s: store.identity for s, store in stores.items()},
                         sources=_sources(), versions=library_versions())
-        run = dict(version=1, identity=identity, output_root=str(output),
+        run = dict(version=2, identity=identity, output_root=str(output),
                    checkpoint=artifacts['model']['checkpoint'], cache_descriptor=str(Path(receipt).resolve()),
-                   prompts={s: str((output / 'internal' / 'prompts' / s).resolve()) for s in stores})
+                   prompts=prompt_paths, schedule_dir=str(schedule_dir), loader_receipt=str(loader_receipt),
+                   loader_receipt_sha256=digest(loader_receipt))
         if run_path.exists():
             compatible_run(json.loads(run_path.read_text()), run)
         atomic_json(run_path, run)
@@ -205,11 +212,13 @@ def _validation_progress(event):
 
 def _read_run(path):
     run = json.loads(Path(path).read_text(encoding='utf-8'))
-    if run.get('version') != 1 or run['identity']['sources'] != _sources():
+    if run.get('version') != 2 or run['identity']['sources'] != _sources():
         raise ValueError('Teacher code/format changed; refusing incompatible resume')
     cfg = run['identity']['protocol']
     if cfg != load_config():
         raise ValueError('Teacher protocol identity differs')
+    if digest(run['loader_receipt']) != run['loader_receipt_sha256']:
+        raise ValueError('Loader validation receipt checksum differs from run')
     return run
 
 
@@ -221,9 +230,10 @@ def _split_identity(run, split):
 
 def _store(run, split, rank):
     from .storage import TargetShard
-    count = run['identity']['protocol']['splits'][split]
+    from .schedule import load_rows
+    rows = load_rows(run['schedule_dir'], run['identity']['schedule'], split, rank)
     return TargetShard(Path(run['output_root']) / 'internal' / 'shards' / split / str(rank),
-                       _split_identity(run, split), shard_rows(count, rank), visual_tokens=384)
+                       _split_identity(run, split), rows, visual_tokens=384)
 
 
 def run_worker(run_path, rank, gate):
@@ -237,9 +247,8 @@ def _run_worker_impl(run_path, rank, gate):
     """One fresh process/model per GPU; both stress tests finish before either commits."""
     import torch
     from smolvlm_inference.model import load_model, processor_policy
-    from smolvlm_attention.data import open_validated_cache, make_batch
+    from .loader import teacher_loader, move_batch, memory_snapshot, SETTINGS
     from smolvlm_attention.sample_inputs import library_versions
-    from .prompts import PromptStore
     from .attention import collect_teacher_log_scores
     run = _read_run(run_path)
     output = Path(run['output_root'])
@@ -249,9 +258,8 @@ def _run_worker_impl(run_path, rank, gate):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     torch.set_float32_matmul_precision('highest')
-    reader = open_validated_cache(run['cache_descriptor'])
-    if json.loads(Path(run['cache_descriptor']).read_text())['payload_sha256'] != run['identity']['cache_payload_sha256']:
-        raise ValueError('Cache validation receipt content hash differs from run')
+    if json.loads(Path(run['loader_receipt']).read_text())['payload_sha256'] != run['identity']['cache_payload_sha256']:
+        raise ValueError('Cache loader receipt content hash differs from run')
     if digest(run['checkpoint']) != run['identity']['checkpoint_sha256']:
         raise ValueError('Checkpoint hash changed')
     model = load_model(run['checkpoint'], device=f'cuda:{rank}',
@@ -264,54 +272,121 @@ def _run_worker_impl(run_path, rank, gate):
         layer_index=22, layer_number=23, query_heads=9, kv_heads=3, visual_tokens=384,
         tf32_matmul=torch.backends.cuda.matmul.allow_tf32, tf32_cudnn=torch.backends.cudnn.allow_tf32,
         autocast_enabled=torch.is_autocast_enabled(), attention_backend='native_sdpa_prefix_qk_target')), flush=True)
-    stores = {s: PromptStore(p) for s, p in run['prompts'].items()}
-    if any(stores[s].identity != run['identity']['prompts'][s] for s in stores):
-        raise ValueError('Prompt store identity changed')
-    def measure(split, rows):
-        selected = [stores[split].row(int(i)) for i in rows]
-        batch = make_batch(reader, selected, model.processor, run['identity']['protocol']['camera_order'])
-        if not torch.isfinite(batch['visual_features']).all():
-            raise ValueError('Nonfinite feature batch')
-        with torch.inference_mode(), torch.autocast('cuda', enabled=False):
-            values = collect_teacher_log_scores(model, batch, layer_index=22)
-        return values.detach().cpu().numpy().astype('<f4', copy=False)
-    with ExitStack() as stack:
-        shards = {s: _store(run, s, rank) for s in stores}
-        for shard in shards.values():
-            stack.enter_context(shard.lock())
-        for split, prompts in stores.items():
-            rows = shard_rows(len(prompts), rank)
-            longest = rows[np.lexsort((rows, -prompts.lengths[rows].astype(np.int64)))][:BATCH_SIZE]
-            torch.cuda.reset_peak_memory_stats(rank)
-            started = time.perf_counter()
-            measure(split, longest)
-            torch.cuda.synchronize(rank)
-            print(json.dumps(dict(phase='stress_passed', gpu=rank, split=split, batch=len(longest),
-                longest_prompt=int(prompts.lengths[longest].max()), elapsed_seconds=time.perf_counter()-started,
-                cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(rank),
-                cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(rank))), flush=True)
-        atomic_json(output / 'logs' / f'ready_{rank}.json', dict(gate=str(gate), rank=rank))
-        while not Path(gate).exists():
-            time.sleep(.2)
-        for split, store in shards.items():
-            start = time.perf_counter()
-            initial = len(store.pending_rows)
-            processed = [0]
-            last = [0.0]
-            def report(batch):
-                processed[0] += batch
-                elapsed = time.perf_counter()-start
-                if elapsed-last[0] >= 10 or processed[0] == initial:
-                    speed = processed[0]/max(elapsed, 1e-9)
-                    print(json.dumps(dict(phase='extract', gpu=rank, split=split, batch=batch,
-                        processed=processed[0], committed=len(store.rows)-len(store.pending_rows), total=len(store.rows),
-                        remaining_at_session_start=initial,
-                        elapsed_seconds=elapsed, samples_per_second=speed,
-                        eta_seconds=(initial-processed[0])/max(speed, 1e-9),
+    from .schedule import load_rows, pending_batches
+    from .loader import ReceiptInputs
+    import signal
+    previous_handlers = {}
+    def interrupted(signum, frame):
+        raise InterruptedError(f'Teacher worker received signal {signum}; closing loader workers')
+    for name in ('SIGTERM', 'SIGINT'):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            previous_handlers[signum] = signal.signal(signum, interrupted)
+    try:
+        inputs = ReceiptInputs(run['loader_receipt'])
+        prompts = {split: inputs.prompt(split) for split in run['prompts']}
+        if any(prompts[s].identity != run['identity']['prompts'][s] for s in prompts):
+            raise ValueError('Prompt store identity changed')
+        with ExitStack() as stack:
+            shards = {s: _store(run, s, rank) for s in prompts}
+            for shard in shards.values():
+                stack.enter_context(shard.lock())
+            schedules = {s: load_rows(run['schedule_dir'], run['identity']['schedule'], s, rank) for s in prompts}
+            batches, extraction = [], []
+            for split, store in prompts.items():
+                rows = schedules[split]
+                longest = rows[np.lexsort((rows, -store.lengths[rows].astype(np.int64)))][:BATCH_SIZE]
+                if len(longest):
+                    batches.append([('stress', split, int(row)) for row in longest])
+            stress_count = len(batches)
+            for split, shard in shards.items():
+                for rows in pending_batches(shard, schedules[split], BATCH_SIZE):
+                    extraction.append([('extract', split, row) for row in rows])
+            batches.extend(extraction)
+            queue_bytes = 2 * SETTINGS['num_workers'] * SETTINGS['prefetch_factor'] * BATCH_SIZE
+            queue_bytes *= int(np.prod(inputs.array.shape[1:])) * 4
+            settings = dict(seed=42, shuffle_policy='train_randperm_val_sequential_rank_stride_v1',
+                            feature_cpu_dtype='float32', h2d_dtype='float32', target_dtype='float32',
+                            batch_size=BATCH_SIZE, **SETTINGS)
+            resources = memory_snapshot()
+            print(json.dumps(dict(phase='loader_preflight', gpu=rank, settings=settings,
+                prefetched_features_estimate_both_gpus_bytes=queue_bytes,
+                estimate_excludes_pinned_current_and_other_memory=True, **resources)), flush=True)
+            # An individual shared batch must fit, before queueing any work. Peak use is
+            # checked by the actual prefetched stress; do not equate a queue estimate to peak RAM.
+            one_batch_bytes = BATCH_SIZE * int(np.prod(inputs.array.shape[1:])) * 4
+            if resources['shm_free_bytes'] is not None and resources['shm_free_bytes'] < one_batch_bytes:
+                raise OSError('Insufficient /dev/shm for one FP32 loader batch; settings are not auto-reduced')
+            limit, current = resources['cgroup_limit_bytes'], resources['cgroup_current_bytes']
+            if limit is not None and current is not None and limit - current < one_batch_bytes:
+                raise OSError('Insufficient available cgroup memory for one loader batch')
+            def measure(batch):
+                start = time.perf_counter()
+                device_batch = move_batch(batch, f'cuda:{rank}')
+                with torch.inference_mode(), torch.autocast('cuda', enabled=False):
+                    values = collect_teacher_log_scores(model, device_batch, layer_index=22)
+                values = values.detach().cpu().numpy().astype('<f4', copy=False)
+                return values, time.perf_counter() - start
+            with teacher_loader(run['loader_receipt'], batches, model.processor.tokenizer.pad_token_id,
+                                run['identity']['protocol']['camera_order'], rank) as iterator:
+                for _ in range(stress_count):
+                    waiting = time.perf_counter()
+                    batch = next(iterator)
+                    wait = time.perf_counter() - waiting
+                    torch.cuda.reset_peak_memory_stats(rank)
+                    _, collector_seconds = measure(batch)
+                    # Existing stress boundary synchronization is retained, not used for extraction timers.
+                    torch.cuda.synchronize(rank)
+                    print(json.dumps(dict(phase='stress_passed', gpu=rank, split=batch['split'],
+                        batch=len(batch['rows']), longest_prompt=int(batch['attention_mask'].sum(1).max()),
+                        next_batch_wait_seconds=wait, collector_wall_seconds=collector_seconds,
+                        inputs_pinned=all(batch[key].is_pinned() for key in
+                            ('input_ids', 'attention_mask', 'visual_features')),
                         cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(rank),
-                        cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(rank))), flush=True)
-                    last[0] = elapsed
-            process_pending(store, stores[split].lengths, lambda rows: measure(split, rows), progress=report)
+                        cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(rank),
+                        **memory_snapshot())), flush=True)
+                atomic_json(output / 'logs' / f'ready_{rank}.json', dict(gate=str(gate), rank=rank))
+                while not Path(gate).exists():
+                    time.sleep(.2)
+                initial = {s: len(store.pending_rows) for s, store in shards.items()}
+                processed, starts, last = {}, {}, {}
+                totals = {}
+                for _ in extraction:
+                    waiting = time.perf_counter()
+                    batch = next(iterator)
+                    wait = time.perf_counter() - waiting
+                    split = batch['split']
+                    starts.setdefault(split, waiting)
+                    processed.setdefault(split, 0)
+                    totals.setdefault(split, dict(next_batch_wait_seconds=0., collector_wall_seconds=0., commit_seconds=0.))
+                    values, collector_seconds = measure(batch)
+                    started = time.perf_counter()
+                    rows = batch['rows'].tolist()
+                    shards[split].commit(rows, values)
+                    commit_seconds = time.perf_counter() - started
+                    processed[split] += len(rows)
+                    for key, value in dict(next_batch_wait_seconds=wait, collector_wall_seconds=collector_seconds,
+                                           commit_seconds=commit_seconds).items():
+                        totals[split][key] += value
+                    elapsed = time.perf_counter() - starts[split]
+                    if elapsed - last.get(split, 0.) >= 10 or processed[split] == initial[split]:
+                        speed = processed[split] / max(elapsed, 1e-9)
+                        lengths = batch['attention_mask'].sum(1)
+                        print(json.dumps(dict(phase='extract', gpu=rank, split=split, batch=len(rows),
+                            processed=processed[split], committed=len(shards[split].rows)-len(shards[split].pending_rows),
+                            total=len(shards[split].rows), remaining_at_session_start=initial[split],
+                            elapsed_seconds=elapsed, samples_per_second=speed,
+                            eta_seconds=(initial[split]-processed[split])/max(speed, 1e-9),
+                            prompt_length_min=int(lengths.min()), prompt_length_max=int(lengths.max()),
+                            valid_tokens=int(lengths.sum()), next_batch_wait_seconds=wait,
+                            collector_wall_seconds=collector_seconds, commit_seconds=commit_seconds,
+                            phase_totals=totals[split], loader=settings,
+                            cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(rank),
+                            cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(rank))), flush=True)
+                        last[split] = elapsed
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 def launch(run_path):
@@ -409,6 +484,7 @@ def _bundle_stopped_run(run_path, *, partial=False):
         files = [output / 'run.json']
         files += list((output / 'internal' / 'prompts').rglob('*'))
         files += list((output / 'internal' / 'shards').rglob('*'))
+        files += list((output / 'internal' / 'schedule').rglob('*'))
         target = output / 'teacher_index22_train_val_partial_resume.zip'
     with zipfile.ZipFile(str(target) + '.tmp', 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
         for path in sorted(files):
@@ -422,7 +498,7 @@ def _bundle_stopped_run(run_path, *, partial=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['prepare', 'run', 'validate', 'bundle', 'worker'])
-    parser.add_argument('--output', default='/kaggle/working/smolvlm_teacher_index22_train_val')
+    parser.add_argument('--output', default='/kaggle/working/smolvlm_teacher_index22_train_val_loader')
     parser.add_argument('--config', default=str(DEFAULT_CONFIG))
     parser.add_argument('--mode', choices=['new', 'resume'], default='new')
     parser.add_argument('--cache-input', default='')

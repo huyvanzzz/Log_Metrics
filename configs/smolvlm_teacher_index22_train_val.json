@@ -16,5 +16,14 @@
   "gpu_count": 2,
   "precision": "float32_no_autocast_no_tf32",
   "query_policy": "last_valid_native_generation_prompt_token",
-  "normalization": "mean_heads_all_valid_keys_then_visual_normalization_log_v1"
+  "normalization": "mean_heads_all_valid_keys_then_visual_normalization_log_v1",
+  "seed": 42,
+  "scheduling_policy": "train_randperm_val_sequential_rank_stride_v1",
+  "loader": {
+    "num_workers": 2,
+    "persistent_workers": true,
+    "pin_memory": true,
+    "prefetch_factor": 2,
+    "multiprocessing_context": "spawn"
+  }
 }

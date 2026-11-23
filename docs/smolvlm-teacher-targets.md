@@ -38,10 +38,10 @@ Trong notebook, điền `CACHE_INPUT` nếu muốn chỉ định cache Input; c�
 CLI tương đương:
 
 ```bash
-python -m smolvlm_attention.teacher_targets prepare --output /kaggle/working/smolvlm_teacher_index22_train_val --mode new --cache-input /kaggle/input/cache-smolvlm
-python -m smolvlm_attention.teacher_targets run --output /kaggle/working/smolvlm_teacher_index22_train_val
-python -m smolvlm_attention.teacher_targets validate --output /kaggle/working/smolvlm_teacher_index22_train_val
-python -m smolvlm_attention.teacher_targets bundle --output /kaggle/working/smolvlm_teacher_index22_train_val
+python -m smolvlm_attention.teacher_targets prepare --output /kaggle/working/smolvlm_teacher_index22_train_val_loader --mode new --cache-input /kaggle/input/cache-smolvlm
+python -m smolvlm_attention.teacher_targets run --output /kaggle/working/smolvlm_teacher_index22_train_val_loader
+python -m smolvlm_attention.teacher_targets validate --output /kaggle/working/smolvlm_teacher_index22_train_val_loader
+python -m smolvlm_attention.teacher_targets bundle --output /kaggle/working/smolvlm_teacher_index22_train_val_loader
 ```
 
 Mỗi GPU stress 64 prompt dài nhất của shard train/val. Cả hai phải pass trước khi commit extraction. OOM/lỗi thì dừng, không tự giảm batch/precision, bỏ mẫu hoặc fallback CPU. Logs chứa phase/GPU/split, processed/committed/total, elapsed, throughput, ETA và peak CUDA memory; không in từng sample.
@@ -51,7 +51,7 @@ Mỗi GPU stress 64 prompt dài nhất của shard train/val. Cả hai phải pa
 Partial artifacts gồm `run.json`, `internal/prompts/` và `internal/shards/`, chứa compact token IDs phục vụ extraction/resume. Sau khi workers đã dừng, đóng gói:
 
 ```bash
-python -m smolvlm_attention.teacher_targets bundle --output /kaggle/working/smolvlm_teacher_index22_train_val --partial
+python -m smolvlm_attention.teacher_targets bundle --output /kaggle/working/smolvlm_teacher_index22_train_val_loader --partial
 ```
 
 Phiên sau giải nén partial ZIP, điền thư mục đó vào `RESUME_INPUT`, chọn OUTPUT mới và `MODE='resume'`. Notebook chỉ copy các artifacts resume, không copy cache/checkpoint. Nếu partial đã ở OUTPUT hiện tại thì để `RESUME_INPUT` trống. Prepare xác minh content identity rồi cập nhật operational paths; thay checkpoint/data/prompt/code/format/geometry không được tự chấp nhận. Các batch đã commit được kiểm tra checksum và không tính lại; phần chưa commit được tính lại. Không tự xóa shards.
@@ -68,6 +68,8 @@ Không cần `run.json` hoặc inputs gốc cho portable validation. Manifest `c
 
 ## Phạm vi kiểm chứng
 
+Các kết quả kiểm thử dưới đây thuộc bản exporter serial trước; kết quả loader mới được ghi ở cuối tài liệu.
+
 Tests dùng native model nhỏ và dữ liệu giả offline để kiểm tra eager attention tại index 22, stable log-normalization, visual mapping, padding, answer independence, weights/RNG và storage/resume. Không tải weights/dataset lớn để test local.
 
 Kết quả local: **215 tests liên quan pass** (78,72 giây), gồm nhóm teacher mới và regression attention exporter, inference, saved-score MVPruner, Top-K, source setup. Đã kiểm tra crash trước receipt và trong khởi tạo shard, checksum hỏng, thứ tự hàng, partial archive khi worker đang chạy, và dừng worker còn lại khi một worker lỗi. Hai test fault injection được cô lập đúng module sau regression source reload; không nới tolerance hoặc bỏ assertion.
@@ -79,3 +81,21 @@ python -m pytest tests/test_teacher_attention.py tests/test_teacher_prompts.py t
 ```
 
 **Chưa xác minh batch 64/GPU, VRAM hoặc thời gian với checkpoint thật trên CUDA.** CPU tests không phải bằng chứng đủ bộ nhớ GPU hoặc tốc độ production. Notebook dừng nếu stress không pass. Các exporter/inference cũ và vision cache giữ nguyên.
+
+## Loader version (2026-11)
+
+Output mặc định mới: `smolvlm_teacher_index22_train_val_loader`. Run version 2 từ chối resume run serial cũ; không xóa hoặc sửa targets cũ. Portable log-score format vẫn giữ nguyên.
+
+Mỗi GPU dùng một DataLoader pool `spawn`, 2 workers, persistent workers, pin memory và prefetch factor 2. Dataset/collator chỉ giữ paths, lazy-open memmaps read-only; một batch features được preallocate FP32 rồi copy từ cache FP16. Parent validate đầy đủ cache/prompt một lần; workers dùng receipt/stat và kiểm tra hash prompt, finite từng batch. H2D dùng `non_blocking=True`; không khẳng định transfer đã overlap compute.
+
+Train dùng một CPU generator riêng seed 42 để tạo randperm, validation giữ row order. Hai shard lấy `order[rank::2]`; đây không phải replay chính xác batch order của Accelerate cũ. `internal/schedule` lưu lịch, batch boundaries và checksum; completion receipts phải trọn batch, resume không regroup các row còn thiếu. Loader worker seeding dùng generator riêng.
+
+Cùng một pool xử lý stress train/validation trước, sau đó tiếp tục extraction; hai GPU stress pass mới mở gate commit. Chỉ stress chọn 64 prompt dài nhất, extraction không sort dài-ngắn. Pool đóng/join trong finally, kể cả signal dừng từ parent. Không tự giảm batch/workers/prefetch/precision khi lỗi.
+
+Hai GPU có khoảng 9 GiB features FP32 trong các tác vụ prefetch, chưa tính pinned copies, batch hiện tại và bộ nhớ khác. Đây là dung lượng lý thuyết, không phải peak RAM đo được. Preflight log RAM/cgroup/shared memory, kiểm tra headroom cho một batch và chạy stress với prefetch hoạt động. Log extraction có prompt length min/max, valid tokens, wait-next, collector wall time (gồm H2D/compute/D2H), commit time, throughput. Không thêm CUDA sync để đo các wall timers; chúng không phải GPU kernel timing.
+
+Partial archive có thêm `internal/schedule/`. Receipt operational được tạo lại sau full validation khi prepare resume và bind checksum trong run.json. Không đưa cache/checkpoint vào archive.
+
+Chưa đo CUDA/Kaggle cho phiên bản loader này: chưa xác minh pin-memory thực tế, peak RAM/shared memory, VRAM hoặc tốc độ. Không cam kết ETA hay nhanh hơn train.
+
+Kiểm chứng loader mới: **253 tests liên quan pass**, 126,33 giây trên CPU. Ba cảnh báo pin-memory là do máy local không có accelerator. Coverage gồm spawn hai workers, batch/padding/features khớp reference cũ, native log-score ở tolerance cũ, shuffle/RNG, cleanup khi parent/worker lỗi, lịch và receipt resume, finalize/portable validation, cùng regression attention/Top-K/MVPruner. Không nới tolerance hoặc thay attention math.

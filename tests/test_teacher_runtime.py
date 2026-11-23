@@ -22,7 +22,7 @@ def test_config_is_fixed_and_rejects_method_changes(tmp_path):
 
 def test_sharding_covers_odd_split_without_overlap():
     a, b = shard_rows(7, 0), shard_rows(7, 1)
-    np.testing.assert_array_equal(np.concatenate([a, b]), np.arange(7))
+    np.testing.assert_array_equal(np.sort(np.concatenate([a, b])), np.arange(7))
     assert not set(a) & set(b)
     assert required_space({'train': 341381, 'val': 19785})['numeric_payload_bytes'] == 554750976
 
