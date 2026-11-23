@@ -6,8 +6,9 @@ import json
 
 from smolvlm_attention.mvpruner_ablation.data import atomic_output, write_json
 
-from .design import DEEP, MERGE_SEEDS, MIDDLE, VARIANTS
+from .design import DEEP, MERGE_SEEDS, MIDDLE
 from .runtime import _load_frame
+from .suites import DEEP_LAYERS, suite_variants
 
 
 def _yes_no(text):
@@ -22,13 +23,14 @@ def score(output):
     from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
 
     manifest = json.loads((output / 'manifest.json').read_bytes())
+    variants = suite_variants(manifest)
     frames = manifest['frames']
     texts = {row['id']: [{'caption': row['answer']}] for frame in frames.values() for row in frame['rows']}
     binary = {row['id']: _yes_no(row['answer'])
               for frame in frames.values() for row in frame['rows'] if row['yes_no']}
     if not binary:
         raise ValueError('The selected questions contain no Yes/No answers')
-    for variant in VARIANTS:
+    for variant in variants:
         if not (output / 'predictions' / variant.name / 'complete.json').is_file():
             raise ValueError(f'Complete {variant.name} before scoring the matrix')
 
@@ -36,7 +38,7 @@ def score(output):
     references = tokenizer.tokenize(texts)
     bleu, meteor, rouge, cider = Bleu(4), Meteor(), Rouge(), Cider()
     results = {}
-    for index, variant in enumerate(VARIANTS, 1):
+    for index, variant in enumerate(variants, 1):
         directory = output / 'predictions' / variant.name
         rows = [row for frame_id, frame in frames.items()
                 for row in _load_frame(directory / f'{frame_id}.json', frame['rows'])]
@@ -58,13 +60,16 @@ def score(output):
             fallback_share=sum(row['fallback_rows'] for row in rows) / weights if weights else None,
             truncated=sum(row['truncated'] for row in rows),
         )
-        print(f'{index}/{len(VARIANTS)} {variant.name} | Overall {results[variant.name]["overall"]:.3f}', flush=True)
+        print(f'{index}/{len(variants)} {variant.name} | Overall {results[variant.name]["overall"]:.3f}', flush=True)
 
     baseline = results['baseline']
     for result in results.values():
         result['delta_overall'] = result['overall'] - baseline['overall']
         result['delta_yes_no'] = result['yes_no_accuracy'] - baseline['yes_no_accuracy']
-    write_json(output / 'scores.json', dict(samples=len(texts), yes_no_samples=len(binary), results=results))
+    payload = dict(samples=len(texts), yes_no_samples=len(binary), results=results)
+    if 'suite' in manifest:
+        payload['suite'] = manifest['suite']
+    write_json(output / 'scores.json', payload)
     buffer = StringIO(newline='')
     writer = csv.DictWriter(buffer, ['variant', *baseline.keys()])
     writer.writeheader()
@@ -103,7 +108,25 @@ def plot(output):
         ax.set_ylabel(ylabel)
         written.extend(_export(fig, folder, name, 300))
 
+    def deep(layers, name, key, ylabel, modes=('skip', 'discard')):
+        fig, ax = plt.subplots(figsize=(8.5, 4.6), layout='constrained')
+        width = 0.7 / len(modes)
+        for i, mode in enumerate(modes):
+            names = [f'deep-{mode}-{layer}' for layer in layers]
+            ax.bar(np.arange(len(layers)) + (i - (len(modes) - 1) / 2) * width,
+                   extract(names, key), width, label=mode.capitalize(), color=colors[mode == 'discard'])
+        ax.set_xticks(range(len(layers)), layers)
+        ax.set_xlabel('Intervention layer')
+        ax.legend()
+        finish(fig, ax, name, ylabel)
+
     with plt.rc_context(_STYLE):
+        if payload.get('suite') == 'deep-full':
+            deep(DEEP_LAYERS, 'deep_discard', 'delta_overall', 'Δ Overall vs. baseline', ('discard',))
+            deep(DEEP_LAYERS, 'deep_discard_yes_no', 'delta_yes_no',
+                 'Δ Yes/No accuracy vs. baseline (pp)', ('discard',))
+            return written
+
         fig, ax = plt.subplots(figsize=(9, 4.6), layout='constrained')
         seeds = extract(merge)
         ax.bar(range(4), [*extract(shallow), seeds.mean()], color=[colors[0]] * 3 + [colors[1]])
@@ -120,15 +143,7 @@ def plot(output):
         ax.legend()
         finish(fig, ax, 'middle_masking_controls')
 
-        fig, ax = plt.subplots(figsize=(8.5, 4.6), layout='constrained')
-        for i, mode in enumerate(('skip', 'discard')):
-            names = [f'deep-{mode}-{layer}' for layer in DEEP]
-            ax.bar(np.arange(len(DEEP)) + (i - 0.5) * 0.35, extract(names), 0.35,
-                   label=mode.capitalize(), color=colors[i])
-        ax.set_xticks(range(len(DEEP)), DEEP)
-        ax.set_xlabel('Intervention layer')
-        ax.legend()
-        finish(fig, ax, 'deep_skip_vs_discard')
+        deep(DEEP, 'deep_skip_vs_discard', 'delta_overall', 'Δ Overall vs. baseline')
 
         fig, ax = plt.subplots(figsize=(11, 4.6), layout='constrained')
         for i, (layers, names) in enumerate(middle.items()):

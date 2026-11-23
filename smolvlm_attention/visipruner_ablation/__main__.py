@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from .design import BY_NAME, SAMPLE_COUNT
+from .suites import RUN_VARIANTS, SUITES
 
 
 def main():
@@ -17,12 +17,13 @@ def main():
             command.add_argument('--image-root', type=Path, required=True)
         if name == 'prepare':
             command.add_argument('--test', type=Path, required=True)
-            command.add_argument('--samples', type=int, default=SAMPLE_COUNT)
+            command.add_argument('--samples', type=int)
+            command.add_argument('--suite', choices=SUITES, default='original')
         if name == 'run':
-            command.add_argument('--variant', choices=BY_NAME, required=True)
+            command.add_argument('--variant', choices=RUN_VARIANTS, required=True)
             command.add_argument('--gpu', type=int, default=0)
         if name == 'run-pair':
-            command.add_argument('--variants', choices=BY_NAME, nargs='+', required=True)
+            command.add_argument('--variants', choices=RUN_VARIANTS, nargs='+', required=True)
         if name in ('run', 'run-pair'):
             command.add_argument('--batch-size', type=int, default=8)
             command.add_argument('--max-new-tokens', type=int, default=128)
@@ -33,11 +34,11 @@ def main():
     if args.command == 'prepare':
         from .runtime import prepare
 
-        prepare(args.test, args.image_root, args.output, args.samples)
+        prepare(args.test, args.image_root, args.output, args.samples, suite=args.suite)
     elif args.command == 'run':
         from .runtime import run
 
-        run(args.output, args.image_root, BY_NAME[args.variant], batch_size=args.batch_size,
+        run(args.output, args.image_root, RUN_VARIANTS[args.variant], batch_size=args.batch_size,
             limit=args.max_new_tokens, checkpoint=args.checkpoint, gpu=args.gpu)
     elif args.command == 'run-pair':
         from .launcher import run_pair

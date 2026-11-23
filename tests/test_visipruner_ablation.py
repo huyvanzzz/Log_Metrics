@@ -8,6 +8,7 @@ from smolvlm_attention.mvpruner_ablation.collector import QuestionBatch
 from smolvlm_attention.visipruner_ablation.decoder import Decoder, visual_weights
 from smolvlm_attention.visipruner_ablation.design import VARIANTS, Variant, merge_positions, select_indices
 from smolvlm_attention.visipruner_ablation.handoff import PART1, handoff
+from smolvlm_attention.visipruner_ablation.suites import DEEP_LAYERS, DEEP_SWEEP, suite_variants
 from smolvlm_attention.visipruner_ablation import launcher, runtime
 from smolvlm_attention.mvpruner_ablation.data import file_sha256
 from smolvlm_inference.model import CachedSmolVLM
@@ -24,6 +25,36 @@ def test_matrix_sampling_and_merge_strata():
     sample = select_indices(records, 4)
     assert sample == select_indices(records, 4)
     assert len(sample) == 4 and sum(index < 12 for index in sample) == 3
+
+
+def test_full_deep_matrix_and_manifest(tmp_path, monkeypatch):
+    assert suite_variants({'suite': 'deep-full'}) == DEEP_SWEEP
+    assert len(DEEP_SWEEP) == 8 and DEEP_SWEEP[0] == VARIANTS[0]
+    assert DEEP_LAYERS == tuple(range(24, 31))
+    assert [(variant.mode, variant.layers) for variant in DEEP_SWEEP[1:]] == [
+        ('discard', (layer,)) for layer in DEEP_LAYERS
+    ]
+    assert suite_variants({}) == VARIANTS
+    image_root = tmp_path / 'images'
+    images = {}
+    for camera in runtime.CAMERAS:
+        relative = f'nuscenes/samples/{camera}/frame.jpg'
+        image = image_root / relative
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b'test image bytes')
+        images[camera] = f'data/{relative}'
+    dataset = tmp_path / 'test.json'
+    dataset.write_text(json.dumps([[{'Q': f'Question {i}?', 'A': 'Yes.', 'question_type': 'perception'}, images]
+                                   for i in range(3)]), encoding='utf-8')
+    monkeypatch.setattr(runtime, 'TEST_COUNT', 3)
+    output = tmp_path / 'output'
+    with pytest.raises(ValueError, match='complete test split'):
+        runtime.prepare(dataset, image_root, output, 1, suite='deep-full')
+    runtime.prepare(dataset, image_root, output, suite='deep-full')
+    manifest = json.loads((output / 'manifest.json').read_bytes())
+    assert manifest['samples'] == 3 and manifest['merge'] == {}
+    assert [row['id'] for frame in manifest['frames'].values() for row in frame['rows']] == [0, 1, 2]
+    assert [variant['name'] for variant in manifest['variants']] == [variant.name for variant in DEEP_SWEEP]
 
 
 def test_part1_handoff_autodetects_completed_run_and_preserves_part2(tmp_path):
@@ -93,6 +124,9 @@ def test_single_gpu_run_metadata_can_resume_with_pair_runner(tmp_path):
     path.write_text(json.dumps(legacy), encoding='utf-8')
     runtime._bind(path, current)
     assert json.loads(path.read_bytes()) == legacy
+    path.write_text(json.dumps(dict(current, code=runtime._code_identity(runtime._PRE_SWEEP_RUNTIME))),
+                    encoding='utf-8')
+    runtime._bind(path, current)
     with pytest.raises(ValueError, match='measurement code changed'):
         runtime._bind(path, dict(current, max_new_tokens=512))
 
@@ -128,6 +162,12 @@ def test_baseline_greedy_matches_native_and_deep_cache_lengths():
         ('input_ids', 'attention_mask', 'visual_features')}, generation_config=config)
     actual, ranks, _, _ = decoder.generate(encoded, projected, VARIANTS[0], 3)
     torch.testing.assert_close(actual, native_tokens)
+    no_ranks, saved_ranks, _, _ = decoder.generate(encoded, projected, VARIANTS[0], 3, rank_layers=())
+    torch.testing.assert_close(no_ranks, native_tokens)
+    assert not saved_ranks
+    last_tokens = [decoder.generate(encoded, projected, Variant(mode, mode, (2,), mode), 3)[0]
+                   for mode in ('skip', 'discard')]
+    torch.testing.assert_close(*last_tokens)
     decoder.verify_native(encoded, projected, VARIANTS[0])
     assert ranks[1].shape == (2, 24)
     intervention = Variant('top', 'Top', (1,), 'top10', preserve_mass=True)

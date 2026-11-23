@@ -143,7 +143,7 @@ class Decoder:
                      position_embeddings=self.text.rotary_emb(hidden, positions), use_cache=True)[0]
 
     @torch.inference_mode()
-    def generate(self, encoded, projected, variant, limit, *, rankings=None, recipient=None):
+    def generate(self, encoded, projected, variant, limit, *, rankings=None, recipient=None, rank_layers=RANK_LAYERS):
         _, hidden, valid, question, visual, visual_indices, positions = self._inputs(encoded, projected)
         lengths = valid.sum(1, keepdim=True)
         self.model._context(hidden[..., 0], limit)
@@ -165,7 +165,7 @@ class Decoder:
                 keys.append(trimmed_valid)
                 continue
             keys.append(valid)
-            if variant.mode == 'baseline' and index in RANK_LAYERS:
+            if variant.mode == 'baseline' and index in rank_layers:
                 def capture(attn, _, kwargs):
                     ranks[index] = _rank(attn, kwargs['hidden_states'], kwargs['position_embeddings'],
                                          kwargs['attention_mask'], question, visual_indices)
@@ -221,5 +221,5 @@ class Decoder:
                                     do_sample=False, num_beams=1, use_cache=True)
         expected = native.generate(input_ids=ids, inputs_embeds=fused, attention_mask=valid.long(),
                                    generation_config=settings)[:, ids.shape[1]:].cpu()
-        actual, *_ = self.generate(encoded, projected, baseline, 3)
+        actual, *_ = self.generate(encoded, projected, baseline, 3, rank_layers=())
         torch.testing.assert_close(actual, expected, msg='Baseline greedy tokens differ from the native decoder')

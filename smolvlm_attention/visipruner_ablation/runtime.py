@@ -11,22 +11,32 @@ from smolvlm_attention.mvpruner_ablation.data import (
     CAMERAS, TEST_COUNT, _relative_image, atomic_output, file_sha256, write_json,
 )
 
-from .design import MERGE_SEEDS, RANK_LAYERS, SEED, VARIANTS, merge_positions, select_indices, yes_no
+from .design import MERGE_SEEDS, RANK_LAYERS, SAMPLE_COUNT, SEED, merge_positions, select_indices, yes_no
+from .suites import SUITES, suite_variants
 
 
 # Source digest of runtime.py in the released single-GPU runner.
 _SINGLE_GPU_RUNTIME = 'dd6f4634e1a5857ee2e3b75095af984e88ff56cc1e5aa935ee53f413c9212ea3'
+_PRE_SWEEP_RUNTIME = '7de511b8237294b4ac565df5f02b5c29172f1e7e67ba26d66f6556b86126beb7'
+_PRE_SWEEP_DECODER = '659ab8491304258e694aa085d48a0ddfc1acb4b9cea16948c757b0b000e97247'
 
 
-def prepare(test_file, image_root, output, count):
+def prepare(test_file, image_root, output, count=None, *, suite='original'):
     from tqdm.auto import tqdm
 
     payload = Path(test_file).read_bytes()
     records = json.loads(payload)
     if len(records) != TEST_COUNT:
         raise ValueError(f'Expected {TEST_COUNT} questions in the input split')
+    if suite == 'deep-full':
+        if count not in (None, TEST_COUNT):
+            raise ValueError('The deep-full suite requires the complete test split')
+        count, indices = TEST_COUNT, range(TEST_COUNT)
+    else:
+        count = SAMPLE_COUNT if count is None else count
+        indices = select_indices(records, count)
     frames = {}
-    for index in select_indices(records, count):
+    for index in indices:
         qa, images = records[index]
         paths = [_relative_image(images[camera], camera) for camera in CAMERAS]
         frame_id = sha256('\n'.join(paths).encode()).hexdigest()
@@ -36,11 +46,13 @@ def prepare(test_file, image_root, output, count):
     all_paths = sorted({path for frame in frames.values() for path in frame['paths']})
     assets = {path: dict(sha256=file_sha256(Path(image_root) / path))
               for path in tqdm(all_paths, desc='Hash test images', unit='image')}
-    positions = merge_positions()
-    variants = [dict(asdict(v), layers=list(v.layers)) for v in VARIANTS]
+    positions = merge_positions() if suite == 'original' else {}
+    variants = [dict(asdict(v), layers=list(v.layers)) for v in SUITES[suite]]
     manifest = dict(version=1, seed=SEED, samples=count, test_sha256=sha256(payload).hexdigest(),
                     frames=frames, assets=assets, variants=variants,
-                    merge={str(seed): positions[seed] for seed in MERGE_SEEDS})
+                    merge={str(seed): positions[seed] for seed in MERGE_SEEDS if seed in positions})
+    if suite != 'original':
+        manifest['suite'] = suite
     destination = output / 'manifest.json'
     if destination.exists():
         if json.loads(destination.read_bytes()) != manifest:
@@ -76,18 +88,20 @@ def _code_identity(runtime_digest=None):
     code = [package / name for name in ('design.py', 'decoder.py', 'runtime.py')]
     code += [package.parent / 'mvpruner_ablation' / name for name in ('collector.py', 'runtime.py')]
     code += [package.parents[1] / 'smolvlm_inference' / name for name in ('model.py', 'text.py')]
-    digests = [runtime_digest if path == package / 'runtime.py' and runtime_digest else file_sha256(path)
-               for path in code]
+    if runtime_digest is None:
+        code.append(package / 'suites.py')
+    overrides = ({package / 'runtime.py': runtime_digest, package / 'decoder.py': _PRE_SWEEP_DECODER}
+                 if runtime_digest is not None else {})
+    digests = [overrides.get(path) or file_sha256(path) for path in code]
     return sha256(''.join(digests).encode()).hexdigest()
 
 
 def _bind(path, identity):
     if path.exists():
         existing = json.loads(path.read_bytes())
-        # The parallel scheduler changes provenance only. The checkpoint, decoder code,
-        # input set and generation settings must still match the single-GPU run.
-        legacy = dict(identity, code=_code_identity(_SINGLE_GPU_RUNTIME))
-        if existing != identity and existing != legacy:
+        # Both earlier runners used the same generation and intervention math.
+        legacy_codes = (_code_identity(_SINGLE_GPU_RUNTIME), _code_identity(_PRE_SWEEP_RUNTIME))
+        if existing != identity and not any(existing == dict(identity, code=code) for code in legacy_codes):
             raise ValueError('Checkpoint, data, decoding settings or measurement code changed; use a new output directory')
     else:
         write_json(path, identity)
@@ -115,12 +129,13 @@ def _projected(model, output, frame_id, frame, manifest, image_root):
     return projected
 
 
-def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file, recipient, batch_size, logger):
+def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file, recipient, batch_size, logger,
+                   rank_layers):
     import numpy as np
     import torch
 
     encoded = [encoder.encode(row['question']) for row in rows]
-    rank_layers = [layer for layer in RANK_LAYERS if layer <= len(decoder.text.layers)]
+    rank_layers = tuple(layer for layer in rank_layers if layer <= len(decoder.text.layers))
     rank_parts = {layer: [] for layer in rank_layers}
     ranking = {}
     if variant.mode in ('top10', 'keep10', 'bottom10', 'keep5'):
@@ -136,7 +151,7 @@ def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file,
             tokens, ranks, mass, truncated = decoder.generate(
                 encoded[start:stop], projected, variant, limit,
                 rankings={layer: order[start:stop] for layer, order in ranking.items()} or None,
-                recipient=recipient,
+                recipient=recipient, rank_layers=rank_layers,
             )
         except torch.cuda.OutOfMemoryError:
             if batch_size == 1:
@@ -154,7 +169,7 @@ def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file,
         torch.cuda.empty_cache()
         batch_size = max(1, batch_size // 2)
         logger.warning('CUDA OOM. Retrying the same questions with batch size %s', batch_size)
-    if variant.mode == 'baseline':
+    if variant.mode == 'baseline' and rank_layers:
         with atomic_output(rank_file) as stream:
             np.savez_compressed(stream, ids=[row['id'] for row in rows],
                                 **{str(layer): np.concatenate(parts) for layer, parts in rank_parts.items()})
@@ -183,6 +198,10 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
     torch.cuda.set_device(device)
     manifest_path = output / 'manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
+    variants = suite_variants(manifest)
+    if variant not in variants:
+        raise ValueError(f'{variant.name} is not part of the suite in {manifest_path}')
+    rank_layers = RANK_LAYERS if manifest.get('suite', 'original') == 'original' else ()
     logger = _logger(output, variant.name)
     spec = MODELS['base']
     lock_folder = output / 'locks'
@@ -208,9 +227,9 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
             else:
                 pending.append((frame_id, frame))
         total = manifest['samples']
-        number = VARIANTS.index(variant) + 1
+        number = variants.index(variant) + 1
         logger.info('Experiment %s/%s | %s | %s/%s questions already measured',
-                    number, len(VARIANTS), device, done, total)
+                    number, len(variants), device, done, total)
         if pending:
             torch.set_float32_matmul_precision('highest')
             torch.backends.cudnn.allow_tf32 = False
@@ -229,7 +248,7 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
                         logger.info('Baseline greedy-token parity with native SmolVLM passed')
                     results, batch_size = _measure_frame(
                         decoder, encoder, frame['rows'], projected, variant, limit,
-                        output / 'rankings' / f'{frame_id}.npz', recipient, batch_size, logger,
+                        output / 'rankings' / f'{frame_id}.npz', recipient, batch_size, logger, rank_layers,
                     )
                     write_json(directory / f'{frame_id}.json', results)
                     done += len(results)

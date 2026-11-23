@@ -22,6 +22,22 @@ Nếu chạy liền cả 23 cấu hình trong một phiên, dùng
 `notebooks/kaggle_smolvlm_visipruner_ablation_full.ipynb`. Bản full gồm chuẩn bị
 dữ liệu, đo, chấm điểm và xuất hình.
 
+## Quét Deep trên toàn bộ test
+
+Dùng `notebooks/kaggle_smolvlm_visipruner_deep_full.ipynb` để chạy baseline
+và bảy lượt Discard từ layer **24–30** trên **16.817 câu**, tổng cộng
+**8 cấu hình**. T4 ×2 chạy song song hai mốc Discard, với layer 30 chạy riêng.
+Baseline dùng toàn bộ test và lưu cache đặc trưng ảnh cho các lượt Discard.
+
+Kết quả lưu riêng dưới `/kaggle/working/visipruner_deep_discard_512_outputs`. Khi chia
+qua nhiều phiên, lưu thư mục kết quả, gắn nó làm Kaggle Input ở phiên mới và
+đặt `RESUME_FROM` thành thư mục chứa `manifest.json`. Dùng cùng loại GPU,
+phiên bản PyTorch và cấu hình sinh để tiếp tục. Cả baseline và Discard dùng
+greedy với trần 512 token. Cell chấm điểm và vẽ xuất bảng điểm và hai hình riêng cho
+ΔOverall và ΔYes/No accuracy so với baseline toàn tập.
+
+## Lưu tiến độ
+
 Baseline chạy trên GPU 0 và lưu thứ hạng token ảnh cho các lượt mask. Sau
 baseline, mỗi cell mô tả tối đa hai biến thể. Trên T4 ×2, một biến thể chạy trên
 GPU 0 và biến thể kia chạy trên GPU 1. Trên một GPU, hai biến thể chạy tuần tự.
