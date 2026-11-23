@@ -91,8 +91,11 @@ def test_part1_handoff_autodetects_completed_run_and_preserves_part2(tmp_path):
 
 
 @pytest.mark.parametrize('devices', [1, 2])
-def test_pair_launches_two_workers_only_when_two_gpus_are_available(monkeypatch, devices):
-    variants = ('shallow-top10', 'shallow-keep10')
+@pytest.mark.parametrize('with_baseline', [False, True])
+def test_pair_launches_two_workers_only_when_two_gpus_are_available(monkeypatch, tmp_path, devices, with_baseline):
+    variants = ('baseline', 'deep-discard-24') if with_baseline else ('shallow-top10', 'shallow-keep10')
+    if with_baseline:
+        (tmp_path / 'manifest.json').write_text(json.dumps({'suite': 'deep-full'}), encoding='utf-8')
     launches = []
     monkeypatch.setattr(torch.cuda, 'device_count', lambda: devices)
 
@@ -112,8 +115,15 @@ def test_pair_launches_two_workers_only_when_two_gpus_are_available(monkeypatch,
 
     monkeypatch.setattr(launcher.subprocess, 'Popen', Worker)
     monkeypatch.setattr(launcher.subprocess, 'run', lambda cmd, check: record(cmd))
-    launcher.run_pair(variants, output='out', image_root='images', batch_size=8, limit=128, checkpoint=None)
+    launcher.run_pair(variants, output=tmp_path, image_root='images', batch_size=8, limit=512, checkpoint=None)
     assert launches == [(variants[0], '0'), (variants[1], str(devices - 1))]
+
+
+def test_original_suite_baseline_still_runs_separately(tmp_path):
+    (tmp_path / 'manifest.json').write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError, match='only with a Discard variant'):
+        launcher.run_pair(('baseline', 'shallow-top10'), output=tmp_path, image_root='images',
+                          batch_size=8, limit=128, checkpoint=None)
 
 
 def test_single_gpu_run_metadata_can_resume_with_pair_runner(tmp_path):
@@ -126,6 +136,9 @@ def test_single_gpu_run_metadata_can_resume_with_pair_runner(tmp_path):
     assert json.loads(path.read_bytes()) == legacy
     path.write_text(json.dumps(dict(current, code=runtime._code_identity(runtime._PRE_SWEEP_RUNTIME))),
                     encoding='utf-8')
+    runtime._bind(path, current)
+    old_deep_code = runtime._code_identity(runtime._PRE_BASELINE_PAIR_RUNTIME, pre_sweep=False)
+    path.write_text(json.dumps(dict(current, code=old_deep_code)), encoding='utf-8')
     runtime._bind(path, current)
     with pytest.raises(ValueError, match='measurement code changed'):
         runtime._bind(path, dict(current, max_new_tokens=512))

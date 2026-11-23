@@ -1,7 +1,11 @@
 """Run independent intervention variants on separate visible GPUs."""
 
+import json
+from pathlib import Path
 import subprocess
 import sys
+
+from .suites import suite_variants
 
 
 def run_pair(variants, *, output, image_root, batch_size, limit, checkpoint):
@@ -10,7 +14,10 @@ def run_pair(variants, *, output, image_root, batch_size, limit, checkpoint):
     if not 1 <= len(variants) <= 2 or len(set(variants)) != len(variants):
         raise ValueError('Specify one or two distinct intervention variants')
     if 'baseline' in variants:
-        raise ValueError('Run baseline separately before running interventions')
+        manifest = json.loads((Path(output) / 'manifest.json').read_bytes())
+        if (len(variants) != 2 or manifest.get('suite') != 'deep-full'
+                or not set(variants) <= {variant.name for variant in suite_variants(manifest)}):
+            raise ValueError('Baseline can run in a pair only with a Discard variant in the deep-full suite')
     gpu_count = torch.cuda.device_count()
     if not gpu_count:
         raise ValueError('Enable a Kaggle GPU before running interventions')

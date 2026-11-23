@@ -26,8 +26,10 @@ dữ liệu, đo, chấm điểm và xuất hình.
 
 Dùng `notebooks/kaggle_smolvlm_visipruner_deep_full.ipynb` để chạy baseline
 và bảy lượt Discard từ layer **24–30** trên **16.817 câu**, tổng cộng
-**8 cấu hình**. T4 ×2 chạy song song hai mốc Discard, với layer 30 chạy riêng.
-Baseline dùng toàn bộ test và lưu cache đặc trưng ảnh cho các lượt Discard.
+**8 cấu hình**. Trên T4 ×2, chạy lần lượt bốn cặp **Baseline + 24**, **25 + 26**,
+**27 + 28** và **29 + 30**. Trên một GPU, mỗi cặp chạy tuần tự.
+Baseline và Discard không cần thứ hạng token để bắt đầu. Hai worker dùng chung
+cache đặc trưng ảnh, với khóa theo từng bộ ảnh để tránh tính trùng.
 
 Kết quả lưu riêng dưới `/kaggle/working/visipruner_deep_discard_512_outputs`. Khi chia
 qua nhiều phiên, lưu thư mục kết quả, gắn nó làm Kaggle Input ở phiên mới và
@@ -38,7 +40,7 @@ greedy với trần 512 token. Cell chấm điểm và vẽ xuất bảng điể
 
 ## Lưu tiến độ
 
-Baseline chạy trên GPU 0 và lưu thứ hạng token ảnh cho các lượt mask. Sau
+Trong ma trận ablation 25%, baseline chạy trên GPU 0 và lưu thứ hạng token ảnh cho các lượt mask. Sau
 baseline, mỗi cell mô tả tối đa hai biến thể. Trên T4 ×2, một biến thể chạy trên
 GPU 0 và biến thể kia chạy trên GPU 1. Trên một GPU, hai biến thể chạy tuần tự.
 Có thể chạy lại cell để tiếp tục từng biến thể từ bộ ảnh cuối đã lưu. Kết quả

@@ -19,6 +19,7 @@ from .suites import SUITES, suite_variants
 _SINGLE_GPU_RUNTIME = 'dd6f4634e1a5857ee2e3b75095af984e88ff56cc1e5aa935ee53f413c9212ea3'
 _PRE_SWEEP_RUNTIME = '7de511b8237294b4ac565df5f02b5c29172f1e7e67ba26d66f6556b86126beb7'
 _PRE_SWEEP_DECODER = '659ab8491304258e694aa085d48a0ddfc1acb4b9cea16948c757b0b000e97247'
+_PRE_BASELINE_PAIR_RUNTIME = 'a3a14a42a493393fad70d83e67fdd3979cb0a4689271288efbe9cb86e5e2b3c7'
 
 
 def prepare(test_file, image_root, output, count=None, *, suite='original'):
@@ -83,15 +84,16 @@ def _load_frame(path, rows):
     return data
 
 
-def _code_identity(runtime_digest=None):
+def _code_identity(runtime_digest=None, *, pre_sweep=True):
     package = Path(__file__).resolve().parent
     code = [package / name for name in ('design.py', 'decoder.py', 'runtime.py')]
     code += [package.parent / 'mvpruner_ablation' / name for name in ('collector.py', 'runtime.py')]
     code += [package.parents[1] / 'smolvlm_inference' / name for name in ('model.py', 'text.py')]
-    if runtime_digest is None:
+    if runtime_digest is None or not pre_sweep:
         code.append(package / 'suites.py')
-    overrides = ({package / 'runtime.py': runtime_digest, package / 'decoder.py': _PRE_SWEEP_DECODER}
-                 if runtime_digest is not None else {})
+    overrides = {package / 'runtime.py': runtime_digest}
+    if runtime_digest is not None and pre_sweep:
+        overrides[package / 'decoder.py'] = _PRE_SWEEP_DECODER
     digests = [overrides.get(path) or file_sha256(path) for path in code]
     return sha256(''.join(digests).encode()).hexdigest()
 
@@ -99,8 +101,9 @@ def _code_identity(runtime_digest=None):
 def _bind(path, identity):
     if path.exists():
         existing = json.loads(path.read_bytes())
-        # Both earlier runners used the same generation and intervention math.
-        legacy_codes = (_code_identity(_SINGLE_GPU_RUNTIME), _code_identity(_PRE_SWEEP_RUNTIME))
+        # Earlier schedulers used the same generation and intervention math.
+        legacy_codes = (_code_identity(_SINGLE_GPU_RUNTIME), _code_identity(_PRE_SWEEP_RUNTIME),
+                        _code_identity(_PRE_BASELINE_PAIR_RUNTIME, pre_sweep=False))
         if existing != identity and not any(existing == dict(identity, code=code) for code in legacy_codes):
             raise ValueError('Checkpoint, data, decoding settings or measurement code changed; use a new output directory')
     else:
@@ -207,7 +210,7 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
     lock_folder = output / 'locks'
     lock_folder.mkdir(parents=True, exist_ok=True)
     with FileLock(str(lock_folder / f'{variant.name}.lock'), timeout=0):
-        if variant.mode != 'baseline' and not (output / 'predictions/baseline/complete.json').is_file():
+        if rank_layers and variant.mode != 'baseline' and not (output / 'predictions/baseline/complete.json').is_file():
             raise ValueError('Finish the baseline before starting the intervention cells')
         if checkpoint is None:
             checkpoint = hf_hub_download(repo_id=spec['repo'], revision=spec['revision'],
