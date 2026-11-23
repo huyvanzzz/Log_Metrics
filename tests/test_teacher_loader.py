@@ -5,6 +5,17 @@ import pytest
 import torch
 
 
+def test_pinned_loader_settings_match_reduced_prefetch_protocol():
+    from smolvlm_attention.teacher_targets.loader import SETTINGS
+    from smolvlm_attention.teacher_targets.runtime import load_config
+    assert SETTINGS == dict(num_workers=2, persistent_workers=True, pin_memory=True,
+                            prefetch_factor=1, multiprocessing_context='spawn')
+    config = load_config()
+    assert config['loader'] == SETTINGS
+    assert config['batch_size'] == 64
+    assert config['precision'] == 'float32_no_autocast_no_tf32'
+
+
 def loader_inputs(tmp_path, model=None):
     from test_smolvlm_cache import fixture_cache
     from test_smolvlm_model import tiny_components

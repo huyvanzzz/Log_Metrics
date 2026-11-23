@@ -12,7 +12,7 @@ from smolvlm_attention.sample_store import atomic_json, fingerprint
 from .prompts import PromptStore, FILES
 
 SETTINGS = dict(num_workers=2, persistent_workers=True, pin_memory=True,
-                prefetch_factor=2, multiprocessing_context='spawn')
+                prefetch_factor=1, multiprocessing_context='spawn')
 
 
 def file_stat(path):

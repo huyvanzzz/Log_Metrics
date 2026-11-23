@@ -86,13 +86,13 @@ python -m pytest tests/test_teacher_attention.py tests/test_teacher_prompts.py t
 
 Output mặc định mới: `smolvlm_teacher_index22_train_val_loader`. Run version 2 từ chối resume run serial cũ; không xóa hoặc sửa targets cũ. Portable log-score format vẫn giữ nguyên.
 
-Mỗi GPU dùng một DataLoader pool `spawn`, 2 workers, persistent workers, pin memory và prefetch factor 2. Dataset/collator chỉ giữ paths, lazy-open memmaps read-only; một batch features được preallocate FP32 rồi copy từ cache FP16. Parent validate đầy đủ cache/prompt một lần; workers dùng receipt/stat và kiểm tra hash prompt, finite từng batch. H2D dùng `non_blocking=True`; không khẳng định transfer đã overlap compute.
+Mỗi GPU dùng một DataLoader pool `spawn`, 2 workers, persistent workers, pin memory và prefetch factor 1. Dataset/collator chỉ giữ paths, lazy-open memmaps read-only; một batch features được preallocate FP32 rồi copy từ cache FP16. Parent validate đầy đủ cache/prompt một lần; workers dùng receipt/stat và kiểm tra hash prompt, finite từng batch. H2D dùng `non_blocking=True`; không khẳng định transfer đã overlap compute.
 
 Train dùng một CPU generator riêng seed 42 để tạo randperm, validation giữ row order. Hai shard lấy `order[rank::2]`; đây không phải replay chính xác batch order của Accelerate cũ. `internal/schedule` lưu lịch, batch boundaries và checksum; completion receipts phải trọn batch, resume không regroup các row còn thiếu. Loader worker seeding dùng generator riêng.
 
 Cùng một pool xử lý stress train/validation trước, sau đó tiếp tục extraction; hai GPU stress pass mới mở gate commit. Chỉ stress chọn 64 prompt dài nhất, extraction không sort dài-ngắn. Pool đóng/join trong finally, kể cả signal dừng từ parent. Không tự giảm batch/workers/prefetch/precision khi lỗi.
 
-Hai GPU có khoảng 9 GiB features FP32 trong các tác vụ prefetch, chưa tính pinned copies, batch hiện tại và bộ nhớ khác. Đây là dung lượng lý thuyết, không phải peak RAM đo được. Preflight log RAM/cgroup/shared memory, kiểm tra headroom cho một batch và chạy stress với prefetch hoạt động. Log extraction có prompt length min/max, valid tokens, wait-next, collector wall time (gồm H2D/compute/D2H), commit time, throughput. Không thêm CUDA sync để đo các wall timers; chúng không phải GPU kernel timing.
+Hai GPU có khoảng 4,5 GiB features FP32 trong các tác vụ prefetch, chưa tính pinned copies, batch hiện tại và bộ nhớ khác. Đây là dung lượng lý thuyết, không phải peak RAM đo được. Preflight log RAM/cgroup/shared memory, kiểm tra headroom cho một batch và chạy stress với prefetch hoạt động. Log extraction có prompt length min/max, valid tokens, wait-next, collector wall time (gồm H2D/compute/D2H), commit time, throughput. Không thêm CUDA sync để đo các wall timers; chúng không phải GPU kernel timing.
 
 Partial archive có thêm `internal/schedule/`. Receipt operational được tạo lại sau full validation khi prepare resume và bind checksum trong run.json. Không đưa cache/checkpoint vào archive.
 
