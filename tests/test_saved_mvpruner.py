@@ -154,3 +154,98 @@ def test_export_identity_and_sample_alignment(damage):
     else:
         aligned=validate_export(export,rows,identity,'sha',expected_count=2)
         assert [r['attention_row'] for r in aligned]==[1,0]
+
+
+@pytest.mark.parametrize('damage',[None,'missing','duplicate','wrong_shard','identity'])
+def test_two_gpu_shards_merge_exact_coverage(tmp_path,damage):
+    import json
+    from smolvlm_inference.saved_attention_run import shard_rows,merge_shards
+    expected=[dict(eval_id=i,sample_id=str(i)) for i in range(7)]
+    assert [len(shard_rows(expected,r)) for r in range(2)]==[4,3]
+    for rank in range(2):
+        folder=tmp_path/f'rank_{rank}'
+        folder.mkdir()
+        rows=[dict(r,prediction=f'p{r["eval_id"]}') for r in reversed(shard_rows(expected,rank))]
+        if rank==0 and damage=='missing':rows.pop()
+        if rank==0 and damage=='duplicate':rows.append(rows[0])
+        if rank==0 and damage=='wrong_shard':rows[0]=dict(expected[1],prediction='bad')
+        (folder/'predictions.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+        metadata=dict(config={},checkpoint_sha256='sha',export_fingerprint='fp',camera_order=[],dtype='float32',query_policy='last')
+        if rank==1 and damage=='identity':metadata['checkpoint_sha256']='other'
+        (folder/'metadata.json').write_text(json.dumps(metadata))
+    if damage:
+        with pytest.raises(ValueError):merge_shards(tmp_path,expected)
+        assert not (tmp_path/'predictions.jsonl').exists()
+    else:
+        values=merge_shards(tmp_path,expected)
+        assert [v['eval_id'] for v in values]==list(range(7))
+        assert [v['prediction'] for v in values]==[f'p{i}' for i in range(7)]
+        metadata=json.loads((tmp_path/'metadata.json').read_text())
+        assert metadata['world_size']==2 and metadata['test_count']==7
+        assert metadata['shard_counts']==[4,3]
+
+
+def test_two_gpu_notebook_launches_one_config_on_both_gpus():
+    import json,ast
+    from pathlib import Path
+    n=json.loads(Path('notebooks/kaggle_smolvlm_mvpruner_saved_attention_test.ipynb').read_text())
+    source='\n'.join(''.join(c['source']) for c in n['cells'] if c['cell_type']=='code')
+    for c in n['cells']:
+        if c['cell_type']=='code':ast.parse(''.join(c['source']))
+    assert "'--gpus','2'" in source
+    assert "CUDA_VISIBLE_DEVICES='0'" not in source
+    assert 'mvpruner_prune_index_2_score_index_22.json' in source
+
+
+@pytest.mark.parametrize('fail',[False,True])
+def test_launcher_barrier_and_failure_cleanup(tmp_path,monkeypatch,fail):
+    import json,subprocess,sys
+    from pathlib import Path
+    from smolvlm_inference import saved_attention_run as module
+    from smolvlm_inference.pruning_run import FIXED
+    prepared=tmp_path/'prepared';prepared.mkdir()
+    expected=[dict(eval_id=i,sample_id=str(i)) for i in range(3)]
+    (prepared/'test.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in expected))
+    config=tmp_path/'config.json'
+    config.write_text(json.dumps(dict(FIXED,stage2_layer_index=2,stage2_score_source='saved_base_attention',score_layer_index=22)))
+    args=SimpleNamespace(config=str(config),output=str(tmp_path/'out'),prepared=str(prepared),
+                         cache='cache',receipt='receipt',checkpoint='checkpoint',attention_input='export')
+    real_popen=subprocess.Popen
+    children=[]
+    devices=[]
+    code=r"""import json,sys,time
+from pathlib import Path
+folder=Path(sys.argv[1]);rank=int(sys.argv[2]);fail=sys.argv[3]=='True'
+if fail and rank==0:sys.exit(7)
+metadata=dict(config={},checkpoint_sha256='sha',export_fingerprint='fp',camera_order=[],dtype='float32',query_policy='last')
+(folder/'metadata.json').write_text(json.dumps(metadata))
+(folder/'stress.ready').touch()
+while not (folder.parent/'test.go').exists():time.sleep(.02)
+rows=[dict(eval_id=i,sample_id=str(i),prediction='car') for i in range(3) if i%2==rank]
+(folder/'predictions.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+"""
+    def popen(argv,**kwargs):
+        folder=argv[argv.index('--output')+1]
+        rank=argv[argv.index('--worker-rank')+1]
+        devices.append(kwargs['env']['CUDA_VISIBLE_DEVICES'])
+        process=real_popen([sys.executable,'-c',code,folder,rank,str(fail)],**kwargs)
+        children.append(process)
+        return process
+    monkeypatch.setattr(module.subprocess,'Popen',popen)
+    monkeypatch.setattr(module.torch.cuda,'device_count',lambda:2)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES','3,5')
+    monkeypatch.setattr(module.common,'preflight_metrics',lambda:None)
+    metrics=[]
+    monkeypatch.setattr(module.common,'score_predictions',lambda path:metrics.append(path))
+    if fail:
+        with pytest.raises(RuntimeError,match='failed'):
+            module.launch(args)
+        assert not metrics
+        assert not (Path(args.output)/'test.go').exists()
+    else:
+        module.launch(args)
+        assert len(metrics)==1
+        assert (Path(args.output)/'mvpruner_saved_attention_artifacts.zip').exists()
+        assert (Path(args.output)/'test.go').exists()
+    assert devices==['3','5']
+    assert all(p.poll() is not None for p in children)
