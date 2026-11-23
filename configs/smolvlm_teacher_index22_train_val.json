@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "checkpoint_repo": "huyvanzzz/smolvlm256M_base",
+  "checkpoint_revision": "f9d4e9a4d704078f9e7f39f061d13602cf251c78",
+  "checkpoint_filename": "finetune_best.pt",
+  "prepared_repo": "huyvanzzz/prepared_data",
+  "prepared_revision": "d2a6914f681dbb9148c4ac11e6fa92452010506e",
+  "cache_dataset": "huyhuy12334/cache-smolvlm/versions/1",
+  "cache_fingerprint": "0632954bab4d7a8e5af5934f3476610a0547db8f3083495c1207c3da87b15585",
+  "camera_order": ["Front", "Front-Left", "Front-Right", "Back", "Back-Left", "Back-Right"],
+  "splits": {"train": 341381, "val": 19785},
+  "score_layer_index": 22,
+  "score_layer_number": 23,
+  "visual_tokens": 384,
+  "batch_size": 64,
+  "gpu_count": 2,
+  "precision": "float32_no_autocast_no_tf32",
+  "query_policy": "last_valid_native_generation_prompt_token",
+  "normalization": "mean_heads_all_valid_keys_then_visual_normalization_log_v1"
+}
