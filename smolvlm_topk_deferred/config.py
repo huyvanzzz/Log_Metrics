@@ -1,0 +1,6 @@
+CONFIGS = ('score22_prune_input', 'score22_prune_after2')
+BATCH_SIZE = 64
+K = 32
+SCORE_LAYER_INDEX = 22
+PRUNE_AFTER_LAYER_INDEX = 2
+TEST_COUNT = 16817

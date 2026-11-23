@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "checkpoint_repo": "huyvanzzz/smolvlm256M_base",
+  "checkpoint_revision": "f9d4e9a4d704078f9e7f39f061d13602cf251c78",
+  "checkpoint_filename": "finetune_best.pt",
+  "prepared_repo": "huyvanzzz/prepared_data",
+  "prepared_revision": "d2a6914f681dbb9148c4ac11e6fa92452010506e",
+  "cache_dataset": "huyhuy12334/cache-smolvlm/versions/1",
+  "camera_order": ["Front", "Front-Left", "Front-Right", "Back", "Back-Left", "Back-Right"],
+  "configurations": ["score22_prune_input", "score22_prune_after2"],
+  "score_layer_index": 22,
+  "prune_after_layer_index": 2,
+  "k": 32,
+  "batch_size": 64,
+  "test_count": 16817,
+  "precision": "float32_no_autocast_no_tf32",
+  "generation": {"do_sample": false, "num_beams": 1, "max_new_tokens": 512, "use_cache": true, "repetition_penalty": 1.0},
+  "policy": "paired_saved_score22_global_top32_input_vs_after_block2_original_rope_layer_local_kv_v1"
+}
