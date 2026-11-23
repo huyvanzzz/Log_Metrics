@@ -155,7 +155,7 @@ class PrunedGreedyDecoder:
                      question=batch['question_mask'].bool(), camera=camera, image=image_ids)
         return state, selected, first
 
-    def _prefill(self, source, selected1, cache, frozen2=None):
+    def _prefill(self, source, selected1, cache, frozen2=None, stage2_visual_scores=None):
         state = _retain_images(source, selected1, self.model.visual_token_len)
         prefixes, counts, cache_lengths = [], [], []
         second, selected2, scores = {}, frozen2, None
@@ -170,7 +170,7 @@ class PrunedGreedyDecoder:
                 past_key_value=cache, use_cache=cache is not None,
                 cache_position=torch.arange(hidden.shape[1], device=hidden.device),
                 position_embeddings=rotary)
-            if i == self.index and frozen2 is None:
+            if i == self.index and frozen2 is None and stage2_visual_scores is None:
                 with _capture_qk(layer.self_attn) as projections:
                     state['hidden'] = layer(hidden, **kwargs)[0]
                 visual_positions = _positions(state['image'] >= 0)
@@ -181,6 +181,12 @@ class PrunedGreedyDecoder:
                 del projections
             else:
                 state['hidden'] = layer(hidden, **kwargs)[0]
+            if i == self.index and frozen2 is None and stage2_visual_scores is not None:
+                visual_positions = _positions(state['image'] >= 0)
+                source_ids = _gather(state['image'], visual_positions)
+                scores = stage2_visual_scores.gather(1, source_ids)
+                local, _, second = stage2_indices(scores, _gather(state['camera'], visual_positions), keep=self.keep2)
+                selected2 = _gather(source_ids, local)
             if self.check_states:
                 states_finite &= torch.isfinite(state['hidden']).all()
             cache_lengths.append(hidden.shape[1])
@@ -217,24 +223,32 @@ class PrunedGreedyDecoder:
         return logits
 
     @torch.inference_mode()
-    def generate(self, batch, max_new_tokens=512, ignore_eos=False, debug=False):
-        return self._generate(batch, max_new_tokens, ignore_eos, debug, reference=False)
+    def generate(self, batch, max_new_tokens=512, ignore_eos=False, debug=False, stage2_visual_scores=None):
+        return self._generate(batch, max_new_tokens, ignore_eos, debug, reference=False, stage2_visual_scores=stage2_visual_scores)
 
     @torch.inference_mode()
-    def generate_reference(self, batch, max_new_tokens=512):
+    def generate_reference(self, batch, max_new_tokens=512, stage2_visual_scores=None):
         """Slow test oracle: recompute history with prefill selections frozen."""
-        return self._generate(batch, max_new_tokens, False, False, reference=True)
+        return self._generate(batch, max_new_tokens, False, False, reference=True, stage2_visual_scores=stage2_visual_scores)
 
-    def _generate(self, batch, max_new_tokens, ignore_eos, debug, reference):
+    def _generate(self, batch, max_new_tokens, ignore_eos, debug, reference, stage2_visual_scores=None):
         if type(max_new_tokens) is not int or max_new_tokens < 1:
             raise ValueError('max_new_tokens must be positive')
+        if stage2_visual_scores is not None:
+            if (stage2_visual_scores.shape != (batch['input_ids'].shape[0], self.model.visual_token_len)
+                    or stage2_visual_scores.dtype != torch.float32
+                    or stage2_visual_scores.device != batch['input_ids'].device
+                    or not bool(torch.isfinite(stage2_visual_scores).all())
+                    or bool((stage2_visual_scores < 0).any())
+                    or bool((stage2_visual_scores.double().sum(1) > 1 + 1e-6).any())):
+                raise ValueError('Invalid saved visual attention probabilities')
         self.check_states = debug or reference
         source, selected1, first = self._inputs(batch)
         original_lengths = source['valid'].sum(1)
         if int(original_lengths.max()) + max_new_tokens > self.text.config.max_position_embeddings:
             raise ValueError('Original prompt plus generation exceeds native context budget')
         cache = None if reference else DynamicCache()
-        logits, prefixes, selected2, info = self._prefill(source, selected1, cache)
+        logits, prefixes, selected2, info = self._prefill(source, selected1, cache, stage2_visual_scores=stage2_visual_scores)
         batch_size = logits.shape[0]
         finished = torch.zeros(batch_size, dtype=torch.bool, device=logits.device)
         lengths = torch.full((batch_size,), max_new_tokens, dtype=torch.long, device=logits.device)
