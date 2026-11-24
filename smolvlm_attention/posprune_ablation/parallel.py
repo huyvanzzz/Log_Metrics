@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from time import perf_counter, sleep
 
 import numpy as np
@@ -17,6 +18,7 @@ from smolvlm_inference.cache import CAMERA_ORDER
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
+from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
 from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, _config, _fit_curve, _generate_rows,
                       _mean_difference, _validate_settings, select_rows)
 
@@ -26,18 +28,21 @@ def _read(path):
 
 
 class _WorkerSession(InferenceSession):
-    def __init__(self, checkpoint, receipt, camera_order, rank):
+    def __init__(self, checkpoint, receipt, camera_order, rank, *, features=None):
         self.device = torch.device('cuda', rank)
         torch.cuda.set_device(self.device)
         self.model = load_model(checkpoint, device=self.device, expected_prompt_camera_order=camera_order)
         self.processor = self.model.processor
-        self.cache = open_validated_cache(receipt)
-        identity = dict(backend='smolvlm_no_pruner', version=1, model_id=self.model.model_id,
-                        revision=self.model.model_revision, processor_policy=processor_policy(self.processor),
-                        geometry=self.model.geometry, storage_dtype='float16', compute_dtype='float32',
-                        camera_order=CAMERA_ORDER)
-        if {key: self.cache.manifest[key] for key in IDENTITY_KEYS} != identity:
-            raise ValueError('Validated cache does not match the worker checkpoint')
+        if features is None:
+            self.cache = open_validated_cache(receipt)
+            identity = dict(backend='smolvlm_no_pruner', version=1, model_id=self.model.model_id,
+                            revision=self.model.model_revision, processor_policy=processor_policy(self.processor),
+                            geometry=self.model.geometry, storage_dtype='float16', compute_dtype='float32',
+                            camera_order=CAMERA_ORDER)
+            if {key: self.cache.manifest[key] for key in IDENTITY_KEYS} != identity:
+                raise ValueError('Validated cache does not match the worker checkpoint')
+        else:
+            self.cache = image_cache(features['directory'], features['frames'], features['counts'])
         self.collator = CachedBatchCollator(
             self.processor, image_seq_len=self.model.geometry['visual_tokens_per_view'],
             max_length=self.model.native.config.text_config.max_position_embeddings,
@@ -47,13 +52,19 @@ class _WorkerSession(InferenceSession):
 
 def _worker(folder):
     job = _read(folder / 'job.json')
-    session = _WorkerSession(job['checkpoint'], job['receipt'], job['camera_order'], job['rank'])
+    features = job['features']
+    session = _WorkerSession(job['checkpoint'], job['receipt'], job['camera_order'], job['rank'], features=features)
     model = session.model
     count = model.visual_token_len
     _validate_settings(count, len(model.native.model.text_model.layers), job['calibration_batch'],
                        job['generation_batch'], job['keep_counts'], job['selection_examples'])
     calibration, evaluation = job['calibration'], job['evaluation']
     print(f'{session.device} · {torch.cuda.get_device_name(session.device)}', flush=True)
+    if features is not None:
+        build_frames(model, features['frames'][job['rank']::features['workers']], features['directory'])
+        _json_write(folder / 'features_ready.json', True)
+        while not (folder.parent / 'features_ready.json').is_file():
+            sleep(.4)
     observed = _mean_difference(session, calibration, job['calibration_batch'], 'Calibration prefill')
     held_out = _mean_difference(session, [row for _, row in evaluation], job['calibration_batch'], 'Held-out prefill')
     _json_write(folder / 'prefill.json', dict(session=session.describe(),
@@ -106,6 +117,13 @@ def _check_workers(processes, folders):
     return all(code == 0 for code in codes)
 
 
+def _wait_for_files(processes, folders, paths, stage):
+    while not all(path.is_file() for path in paths):
+        if _check_workers(processes, folders):
+            raise RuntimeError(f'GPU workers exited before completing {stage}')
+        sleep(.5)
+
+
 def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, camera_order,
                  gpu_count=2, calibration_size=800, evaluation_size=100, evaluation_fraction=None, calibration_batch=4,
                  generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3):
@@ -124,10 +142,18 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
     output = Path(output).resolve()
     workers = output / 'workers'
     workers.mkdir(parents=True, exist_ok=False)
-    print(f'Validating the shared feature cache once for {count} GPU worker(s).', flush=True)
-    validation_start = perf_counter()
-    receipt = validate_cache(cache, prepared, workers, expected_fingerprint=cache_fingerprint)
-    validation_elapsed = perf_counter() - validation_start
+    receipt = None
+    validation_elapsed = 0.0
+    frames = None
+    if cache is None:
+        frames = frame_plan([*calibration, *evaluation])
+        print(f'Downloading DriveLM images and building features for {len(frames):,} unique frames across {count} GPU worker(s).',
+              flush=True)
+    else:
+        print(f'Validating the shared feature cache once for {count} GPU worker(s).', flush=True)
+        validation_start = perf_counter()
+        receipt = str(validate_cache(cache, prepared, workers, expected_fingerprint=cache_fingerprint))
+        validation_elapsed = perf_counter() - validation_start
     environment = dict(os.environ, TOKENIZERS_PARALLELISM='false')
     source = str(Path(__file__).resolve().parents[2])
     environment['PYTHONPATH'] = os.pathsep.join(filter(None, (source, environment.get('PYTHONPATH'))))
@@ -137,9 +163,16 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
     evaluation_shards = [numbered[rank::count] for rank in range(count)]
     processes = []
     prefill_start = perf_counter()
+    temporary = TemporaryDirectory(prefix='posprune-frames-') if frames is not None else None
     try:
+        features = None
+        feature_elapsed = 0.0
+        if temporary is not None:
+            dataset_counts = _read(Path(prepared) / 'manifest.json')['counts']
+            features = dict(frames=frames, directory=temporary.name, workers=count, counts=dataset_counts)
         for rank, folder in enumerate(folders):
-            _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=str(receipt),
+            _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=receipt,
+                features=features,
                 camera_order=camera_order, rank=rank, calibration_batch=calibration_batch,
                 generation_batch=generation_batch, keep_counts=keep_counts,
                 selection_examples=selection_examples, warmup=calibration[0],
@@ -149,16 +182,19 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                 processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                                    env=environment, cwd=source))
 
+        if features is not None:
+            _wait_for_files(processes, folders, [folder / 'features_ready.json' for folder in folders], 'feature extraction')
+            feature_elapsed = perf_counter() - prefill_start
+            _json_write(workers / 'features_ready.json', True)
         print(f'Measuring calibration and held-out attention across {count} GPU worker(s).', flush=True)
         paths = [folder / 'prefill.json' for folder in folders]
-        while not all(path.is_file() for path in paths):
-            if _check_workers(processes, folders):
-                raise RuntimeError('GPU workers exited without returning prefill statistics')
-            sleep(.5)
+        _wait_for_files(processes, folders, paths, 'prefill statistics')
         stats = [_read(path) for path in paths]
         primary = stats[0]
         config = _config(primary['session'], primary['per_view'], calibration, evaluation, policy, seed,
                          calibration_batch, generation_batch, keep_counts, evaluation_fraction, distribution)
+        config['feature_source'] = (dict(mode='regenerated', unique_frames=len(frames), **IMAGE_SOURCE)
+                                    if frames is not None else dict(mode='mounted', fingerprint=cache_fingerprint))
         config['workers'] = [dict(device=item['session']['device'], gpu=item['gpu'],
                                  calibration_examples=len(a), evaluation_examples=len(b))
                              for item, a, b in zip(stats, calibration_shards, evaluation_shards)]
@@ -178,7 +214,8 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         _merge_predictions(folders, config['evaluation_ids'], output / 'predictions.jsonl')
         _json_write(output / 'parallel_timing.json', dict(workers=count,
             cache_validation_wall_seconds=validation_elapsed,
-            load_and_prefill_wall_seconds=generation_start - prefill_start,
+            load_and_feature_build_wall_seconds=feature_elapsed,
+            load_and_prefill_wall_seconds=generation_start - prefill_start - feature_elapsed,
             paired_generation_wall_seconds=generation_elapsed))
     finally:
         for process in processes:
@@ -186,6 +223,8 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                 process.terminate()
         for process in processes:
             process.wait()
+        if temporary is not None:
+            temporary.cleanup()
     return output
 
 

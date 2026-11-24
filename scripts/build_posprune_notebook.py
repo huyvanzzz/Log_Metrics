@@ -38,7 +38,7 @@ def main():
         cell('markdown', '''
 # SmolVLM decoder-only PosPrune ablation
 
-Select **GPU T4 ×2** in Kaggle and enable Internet. Attach `huyhuy12334/cache-smolvlm` version 1 as an Input if available. The notebook validates the mounted cache once and splits calibration and evaluation questions between two workers. It uses one worker if only one GPU is visible.
+Select **GPU T4 ×2** in Kaggle, enable Internet, and use **Save & Run All**. The notebook downloads the pinned checkpoint, prepared data, and the images it needs from Hugging Face without adding any Kaggle Inputs. The GPUs run the frozen vision encoder once per selected six-camera frame and store temporary FP16 pre-connector features shared by all variants.
 
 Evaluation uses a seeded, stratified 50% test sample with the original question-type proportions. The notebook prints the full and selected counts for perception, prediction, planning, and behavior. Calibration still uses 800 separate validation questions.
 
@@ -47,7 +47,7 @@ The cubic is fitted once on validation attention differences from layers 3 and 2
 The notebook includes its Python source snapshot. Regenerate it with `python scripts/build_posprune_notebook.py` after editing the source.
 
 First-token and generation latency are measured once per batch, after inputs reach the GPU. The comparison table also reports model throughput in questions per GPU-second.
-`parallel_timing.json` records elapsed time for the shared cache scan, checkpoint loading and prefill, and paired generation across both GPUs.
+`parallel_timing.json` records elapsed time for feature preparation, prefill, and paired generation across both GPUs. For comparisons against earlier runs, `config.json` distinguishes freshly extracted features from a mounted cache.
 '''),
         cell('code', '''
 GPU_COUNT = 2
@@ -58,7 +58,7 @@ GENERATION_BATCH = 4   # Per GPU, with automatic CUDA OOM backoff.
 KEEP_COUNTS = (192, 96, 48)
 SEED = 42
 SELECTION_EXAMPLES = 3  # Save full ranked selections for the first evaluation examples.
-CACHE_INPUT_DIR = ''   # Optional directory within /kaggle/input containing the cache files.
+CACHE_INPUT_DIR = ''   # Leave blank to fetch images and build features automatically.
 '''),
         cell('code', f'''
 # Embedded source snapshot. Run this cell before importing Transformers.
@@ -90,8 +90,8 @@ import torch
 import transformers
 import tokenizers
 from huggingface_hub import hf_hub_download
-import kagglehub
 from smolvlm_attention.config import MODELS, CACHE_DATASET, CACHE_FINGERPRINT, PREPARED_REPO, PREPARED_REVISION
+from smolvlm_attention.posprune_ablation.cache_input import resolve_cache_input
 
 if (transformers.__version__, tokenizers.__version__) != ('4.46.3', '0.20.4'):
     raise RuntimeError('Restart the kernel after dependency installation and Run All.')
@@ -103,6 +103,11 @@ if GPU_COUNT < 1:
 worker_count = min(GPU_COUNT, visible_gpus)
 print(f'Using {worker_count} of {visible_gpus} visible GPU(s).')
 
+cache_dir = None
+if CACHE_INPUT_DIR:
+    cache_dir = resolve_cache_input('/kaggle/input', CACHE_INPUT_DIR, dataset=CACHE_DATASET,
+                                   fingerprint=CACHE_FINGERPRINT)
+    print(f'Using mounted feature cache: {cache_dir}')
 work = Path('/kaggle/working/smolvlm-posprune')
 prepared_dir = work / 'prepared_data'
 for name in ('manifest.json', 'train.jsonl', 'val.jsonl', 'test.jsonl'):
@@ -111,17 +116,12 @@ for name in ('manifest.json', 'train.jsonl', 'val.jsonl', 'test.jsonl'):
 base = MODELS['base']
 checkpoint = hf_hub_download(repo_id=base['repo'], revision=base['revision'],
                              filename='finetune_best.pt', token=False)
-cache_root = Path(CACHE_INPUT_DIR) if CACHE_INPUT_DIR else Path(kagglehub.dataset_download(CACHE_DATASET))
-caches = [path.parent for path in cache_root.rglob('features.float16.memmap')
-          if (path.parent / 'manifest.json').is_file() and (path.parent / 'index.json').is_file()]
-if len(caches) != 1:
-    raise RuntimeError(f'Expected exactly one complete cache under {cache_root}, found {len(caches)}.')
 '''),
         cell('code', '''
 from smolvlm_attention.posprune_ablation.parallel import run_parallel
 
 run_dir = Path(tempfile.mkdtemp(prefix='run-', dir=work))
-output = run_parallel(checkpoint, caches[0], prepared_dir, run_dir / 'results',
+output = run_parallel(checkpoint, cache_dir, prepared_dir, run_dir / 'results',
                       cache_fingerprint=CACHE_FINGERPRINT, camera_order=base['camera_order'], gpu_count=worker_count,
                       calibration_size=CALIBRATION_SIZE, evaluation_size=None, evaluation_fraction=EVALUATION_FRACTION,
                       calibration_batch=CALIBRATION_BATCH, generation_batch=GENERATION_BATCH,

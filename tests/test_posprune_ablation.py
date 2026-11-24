@@ -195,12 +195,65 @@ def test_half_split_preserves_question_type_proportions_and_pinned_identity(tmp_
         stratified_test(test, prepared, .5, 42, labels_path=labels)
 
 
-def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mount', ['cache-smolvlm', 'datasets/huyhuy12334/cache-smolvlm', 'custom-mount'])
+def test_cache_input_resolves_already_mounted_pinned_cache(tmp_path, mount):
+    from smolvlm_attention.posprune_ablation.cache_input import resolve_cache_input
+    from smolvlm_inference.cache import FEATURE_FILE
+
+    cache = tmp_path / mount / 'features'
+    cache.mkdir(parents=True)
+    (cache / FEATURE_FILE).touch()
+    (cache / 'index.json').write_text('{}', encoding='utf-8')
+    (cache / 'manifest.json').write_text('{"fingerprint":"pinned"}', encoding='utf-8')
+    args = dict(dataset='huyhuy12334/cache-smolvlm/versions/1', fingerprint='pinned')
+    assert resolve_cache_input(tmp_path, '', **args) == cache.resolve()
+    assert resolve_cache_input(tmp_path / 'unavailable', str(cache), **args) == cache.resolve()
+
+    (cache / 'manifest.json').write_text('{"fingerprint":"other"}', encoding='utf-8')
+    with pytest.raises(ValueError, match='none match the pinned cache'):
+        resolve_cache_input(tmp_path, '', **args)
+
+
+def test_missing_cache_explains_noninteractive_dataset_attachment(tmp_path):
+    from smolvlm_attention.posprune_ablation.cache_input import resolve_cache_input
+
+    with pytest.raises(FileNotFoundError, match='Attach huyhuy12334/cache-smolvlm version 1'):
+        resolve_cache_input(tmp_path, '', dataset='huyhuy12334/cache-smolvlm/versions/1', fingerprint='pinned')
+
+
+def test_public_image_path_builds_reusable_fp16_features_in_camera_order(tmp_path, monkeypatch):
+    from PIL import Image
+    from smolvlm_attention.posprune_ablation import image_features
+
+    model, _, _ = fixture()
+    row = dict(camera_paths={camera: f"data/nuscenes/samples/CAM_{camera.upper().replace('-', '_')}/{i}.jpg"
+                             for i, camera in enumerate(CAMERA_ORDER)})
+    frames = image_features.frame_plan([row, row])
+    assert len(frames) == 1
+    assert [path.rsplit('/', 1)[-1] for path in frames[0][1]] == [f'{i}.jpg' for i in range(6)]
+
+    def fetch(path):
+        i = int(path.rsplit('/', 1)[-1].split('.')[0])
+        return Image.new('RGB', (16, 16), (i * 40, 20, 100))
+
+    monkeypatch.setattr(image_features, '_fetch_image', fetch)
+    image_features.build_frames(model, frames, tmp_path)
+    cache = image_features.image_cache(tmp_path, frames, {'val': 1, 'test': 1})
+    features = cache.array[cache.index[record_key(row)]]
+    assert features.shape == (6, 16, 8) and features.dtype == np.float16
+    reference = image_features.encode_frame(model, [fetch(path) for path in frames[0][1]])
+    np.testing.assert_array_equal(features, reference)
+
+
+@pytest.mark.parametrize('mounted', [True, False])
+def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_path, monkeypatch, mounted):
     from pathlib import Path
     from smolvlm_attention.posprune_ablation import parallel
 
-    rows = [dict(sample_id=str(i), camera_paths={camera: f'{i}/{camera}.jpg' for camera in CAMERA_ORDER})
+    rows = [dict(sample_id=str(i), camera_paths={
+        camera: f"data/nuscenes/samples/CAM_{camera.upper().replace('-', '_')}/{i}.jpg" for camera in CAMERA_ORDER})
             for i in range(8)]
+    (tmp_path / 'manifest.json').write_text('{"counts":{"val":3,"test":5}}', encoding='utf-8')
     monkeypatch.setattr(parallel, 'select_rows', lambda *args, **kwargs: (rows[:3], rows[3:], 'fixture', None))
     monkeypatch.setattr(torch.cuda, 'device_count', lambda: 2)
     validations = []
@@ -219,12 +272,16 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
             rank = self.job['rank']
             self.bias = self.folder.parent.parent / 'bias_curve.json'
             self.done = False
+            if self.job['features'] is not None:
+                parallel._json_write(self.folder / 'features_ready.json', True)
             parallel._json_write(self.folder / 'prefill.json', dict(
                 session=dict(device=f'cuda:{rank}', camera_order=CAMERA_ORDER, visual_tokens=24), per_view=4,
                 gpu='T4 fixture', observed=[float(rank + 1)] * 24, held_out=[float(rank + 1)] * 24))
 
         def poll(self):
             if self.bias.exists() and not self.done:
+                if self.job['features'] is not None:
+                    assert (self.folder.parent / 'features_ready.json').is_file()
                 with (self.folder / 'predictions.jsonl').open('w', encoding='utf-8') as stream:
                     for _, row in self.job['evaluation']:
                         stream.write(json.dumps({'sample_id': row['sample_id']}) + '\n')
@@ -236,9 +293,15 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
 
     monkeypatch.setattr(parallel, 'validate_cache', validate)
     monkeypatch.setattr(parallel.subprocess, 'Popen', FakeProcess)
-    output = parallel.run_parallel('checkpoint.pt', tmp_path, tmp_path, tmp_path / 'results',
+    output = parallel.run_parallel('checkpoint.pt', tmp_path if mounted else None, tmp_path, tmp_path / 'results',
                                    cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=(5,))
-    assert validations == ['expected']
+    assert validations == (['expected'] if mounted else [])
+    source = parallel._read(output / 'config.json')['feature_source']
+    assert source['mode'] == ('mounted' if mounted else 'regenerated')
+    if not mounted:
+        assert source['unique_frames'] == 8
+        assert len(jobs[0]['features']['frames']) == 8
+        assert not Path(jobs[0]['features']['directory']).exists()
     assert [job['generation_batch'] for job in jobs] == [4, 4]
     assert [[index for index, _ in job['evaluation']] for job in jobs] == [[0, 2, 4], [1, 3]]
     assert parallel._read(output / 'bias_curve.json')['fitted'] == pytest.approx([4 / 3] * 24)
