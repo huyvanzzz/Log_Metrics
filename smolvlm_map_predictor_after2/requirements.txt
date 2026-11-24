@@ -1,0 +1,1 @@
+-r ../smolvlm_map_predictor/requirements.txt
