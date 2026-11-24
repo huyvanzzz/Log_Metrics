@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import signal
 import subprocess
-from types import SimpleNamespace
 
 from smolvlm_attention.sample_store import atomic_json
 
@@ -101,7 +100,13 @@ def launch(run_path):
 
     original = runtime.subprocess
     # Only this launcher's dependency is replaced, not the global subprocess module.
-    runtime.subprocess = SimpleNamespace(Popen=TrackedProcess, TimeoutExpired=subprocess.TimeoutExpired)
+    class SubprocessProxy:
+        Popen = TrackedProcess
+
+        def __getattr__(self, name):
+            return getattr(original, name)
+
+    runtime.subprocess = SubprocessProxy()
     try:
         return runtime.launch(run_path)
     except BaseException as exc:

@@ -75,3 +75,34 @@ def test_notebook_uses_diagnostics_only_for_extraction():
     assert "args[0] == 'run' else BASE" in helper
     from smolvlm_attention.teacher_targets.runtime import _sources
     assert not any(name.endswith('/diagnostics.py') for name in _sources())
+
+
+def test_diagnostics_wraps_actual_runtime_launcher(tmp_path, monkeypatch):
+    import subprocess
+    import torch
+    from smolvlm_attention.teacher_targets import diagnostics as d, runtime
+    path = tmp_path/'run.json'
+    run = dict(output_root=str(tmp_path), prompts={'train': 'unused'}, identity={})
+    path.write_text(json.dumps(run))
+    monkeypatch.setattr(runtime, '_read_run', lambda path: run)
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 2)
+    children = []
+    class Child:
+        def __init__(self):
+            self.returncode = -9 if not children else None
+        def poll(self): return self.returncode
+        def terminate(self): self.returncode = -15
+        def wait(self, timeout=None): return self.returncode
+    def create(*args, **kwargs):
+        assert kwargs['stderr'] == subprocess.STDOUT
+        child = Child(); children.append(child); return child
+    monkeypatch.setattr(d, '_popen', create)
+    original = runtime.subprocess
+    with pytest.raises(RuntimeError, match='Teacher worker failed'):
+        d.launch(path)
+    assert runtime.subprocess is original
+    assert len(children) == 2 and children[1].returncode == -15
+    report = json.loads((tmp_path/'logs/worker_failure.json').read_text())
+    assert report['first_failed_rank'] == 0
+    assert report['workers'][0]['returncode'] == -9
+    assert report['workers'][1]['terminated_by_parent']
