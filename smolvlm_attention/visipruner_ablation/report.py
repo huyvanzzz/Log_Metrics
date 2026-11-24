@@ -3,19 +3,36 @@
 import csv
 from io import StringIO
 import json
+import math
 
-from smolvlm_attention.mvpruner_ablation.data import atomic_output, write_json
+from smolvlm_attention.mvpruner_ablation.data import atomic_output, file_sha256, write_json
 
 from .design import DEEP, MERGE_SEEDS, MIDDLE
 from .runtime import _load_frame
-from .suites import DEEP_LAYERS, suite_variants
+from .suites import DEEP_LAYERS, MIDDLE_CONTROLS, MIDDLE_FULL_RANGE, suite_variants
 
 
 def _yes_no(text):
     return text.strip().casefold().rstrip('.!')
 
 
-def score(output):
+def _import_baseline(path):
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        matches = [row for row in csv.DictReader(stream) if row.get('variant', '').strip() == 'baseline']
+    if len(matches) != 1:
+        raise ValueError('The deep score file must contain exactly one baseline row')
+    row = matches[0]
+    metrics = {key: float(row[key]) for key in ('bleu4', 'meteor', 'rouge_l', 'cider', 'overall', 'yes_no_accuracy')}
+    if not all(math.isfinite(value) for value in metrics.values()):
+        raise ValueError('The imported baseline contains a non-finite metric')
+    expected = (metrics['bleu4'] + metrics['meteor'] + metrics['rouge_l'] + metrics['cider'] / 10) / 4
+    if not math.isclose(metrics['overall'], expected, abs_tol=1e-5):
+        raise ValueError('Imported Overall does not match the metric formula used by this runner')
+    return dict(metrics, removed_visual_mass_share=None, fallback_share=None,
+                truncated=int(row['truncated']) if row.get('truncated') else None)
+
+
+def score(output, baseline_scores=None):
     from pycocoevalcap.bleu.bleu import Bleu
     from pycocoevalcap.cider.cider import Cider
     from pycocoevalcap.meteor.meteor import Meteor
@@ -23,6 +40,10 @@ def score(output):
     from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
 
     manifest = json.loads((output / 'manifest.json').read_bytes())
+    middle_full = manifest.get('suite') == 'middle-full'
+    if middle_full != (baseline_scores is not None):
+        raise ValueError('Supply --baseline-scores for the middle-full suite only')
+    results = {'baseline': _import_baseline(baseline_scores)} if middle_full else {}
     variants = suite_variants(manifest)
     frames = manifest['frames']
     texts = {row['id']: [{'caption': row['answer']}] for frame in frames.values() for row in frame['rows']}
@@ -37,7 +58,6 @@ def score(output):
     tokenizer = PTBTokenizer()
     references = tokenizer.tokenize(texts)
     bleu, meteor, rouge, cider = Bleu(4), Meteor(), Rouge(), Cider()
-    results = {}
     for index, variant in enumerate(variants, 1):
         directory = output / 'predictions' / variant.name
         rows = [row for frame_id, frame in frames.items()
@@ -69,6 +89,8 @@ def score(output):
     payload = dict(samples=len(texts), yes_no_samples=len(binary), results=results)
     if 'suite' in manifest:
         payload['suite'] = manifest['suite']
+    if baseline_scores is not None:
+        payload['baseline_source'] = dict(file=baseline_scores.name, sha256=file_sha256(baseline_scores))
     write_json(output / 'scores.json', payload)
     buffer = StringIO(newline='')
     writer = csv.DictWriter(buffer, ['variant', *baseline.keys()])
@@ -121,6 +143,24 @@ def plot(output):
         finish(fig, ax, name, ylabel)
 
     with plt.rc_context(_STYLE):
+        if payload.get('suite') == 'middle-full':
+            start, stop = MIDDLE_FULL_RANGE
+            prefix = f'middle-{start}-{stop}-'
+            for key, name, ylabel in (
+                ('delta_overall', 'middle_full_preserve_mass', 'Δ Overall vs. baseline'),
+                ('delta_yes_no', 'middle_full_preserve_mass_yes_no', 'Δ Yes/No accuracy vs. baseline (pp)'),
+            ):
+                fig, ax = plt.subplots(figsize=(9, 4.6), layout='constrained')
+                x = np.arange(len(MIDDLE_CONTROLS))
+                for i, (suffix, label) in enumerate((('', 'Mask only'), ('-mass', 'Mask + preserve mass'))):
+                    names = [prefix + mode + suffix for mode, _ in MIDDLE_CONTROLS]
+                    ax.bar(x + (i - 0.5) * 0.36, extract(names, key), 0.36, label=label, color=colors[i])
+                ax.set_xticks(x, [title.replace('Chỉ giữ', 'Keep') for _, title in MIDDLE_CONTROLS])
+                ax.set_title(f'Layers {start}–{stop}')
+                ax.legend()
+                finish(fig, ax, name, ylabel)
+            return written
+
         if payload.get('suite') == 'deep-full':
             deep(DEEP_LAYERS, 'deep_discard', 'delta_overall', 'Δ Overall vs. baseline', ('discard',))
             deep(DEEP_LAYERS, 'deep_discard_yes_no', 'delta_yes_no',

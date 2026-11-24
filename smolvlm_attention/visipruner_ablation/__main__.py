@@ -30,6 +30,8 @@ def main():
             command.add_argument('--checkpoint', type=Path)
         if name == 'handoff':
             command.add_argument('--source', type=Path, default=os.environ.get('PART1_OUTPUT') or None)
+        if name == 'score':
+            command.add_argument('--baseline-scores', type=Path)
     args = parser.parse_args()
     if args.command == 'prepare':
         from .runtime import prepare
@@ -56,7 +58,7 @@ def main():
         from .report import plot, score
 
         if args.command == 'score':
-            score(args.output)
+            score(args.output, baseline_scores=args.baseline_scores)
         else:
             for path in plot(args.output):
                 print(path)

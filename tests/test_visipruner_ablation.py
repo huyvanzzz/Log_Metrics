@@ -5,10 +5,11 @@ import pytest
 from transformers import GenerationConfig
 
 from smolvlm_attention.mvpruner_ablation.collector import QuestionBatch
-from smolvlm_attention.visipruner_ablation.decoder import Decoder, visual_weights
+from smolvlm_attention.visipruner_ablation.decoder import Decoder, _keep_positions, visual_weights
 from smolvlm_attention.visipruner_ablation.design import VARIANTS, Variant, merge_positions, select_indices
 from smolvlm_attention.visipruner_ablation.handoff import PART1, handoff
-from smolvlm_attention.visipruner_ablation.suites import DEEP_LAYERS, DEEP_SWEEP, suite_variants
+from smolvlm_attention.visipruner_ablation.report import _import_baseline
+from smolvlm_attention.visipruner_ablation.suites import DEEP_LAYERS, DEEP_SWEEP, MIDDLE_SWEEP, RUN_VARIANTS, suite_variants
 from smolvlm_attention.visipruner_ablation import launcher, runtime
 from smolvlm_attention.mvpruner_ablation.data import file_sha256
 from smolvlm_inference.model import CachedSmolVLM
@@ -55,6 +56,27 @@ def test_full_deep_matrix_and_manifest(tmp_path, monkeypatch):
     assert manifest['samples'] == 3 and manifest['merge'] == {}
     assert [row['id'] for frame in manifest['frames'].values() for row in frame['rows']] == [0, 1, 2]
     assert [variant['name'] for variant in manifest['variants']] == [variant.name for variant in DEEP_SWEEP]
+    runtime.prepare(dataset, image_root, tmp_path / 'middle', suite='middle-full')
+    middle = json.loads((tmp_path / 'middle/manifest.json').read_bytes())
+    assert middle['samples'] == 3 and len(middle['variants']) == 8
+    assert suite_variants(middle) == MIDDLE_SWEEP
+    assert tuple(RUN_VARIANTS[variant.name] for variant in VARIANTS) == VARIANTS
+    for mask, preserve in zip(MIDDLE_SWEEP[::2], MIDDLE_SWEEP[1::2]):
+        assert mask.layers == tuple(range(20, 25))
+        assert (mask.mode, mask.layers, False) == (preserve.mode, preserve.layers, mask.preserve_mass)
+        assert preserve.preserve_mass and preserve.name == mask.name + '-mass'
+
+
+def test_import_baseline_from_deep_score_csv(tmp_path):
+    source = tmp_path / 'scores.txt'
+    columns = 'variant,bleu4,meteor,rouge_l,cider,overall,yes_no_accuracy,truncated\n'
+    source.write_text(columns + 'deep-discard-24,20,30,40,200,27.5,80,30\n'
+                      + 'baseline,30,40,50,300,37.5,82,20\n', encoding='utf-8')
+    result = _import_baseline(source)
+    assert result['overall'] == 37.5 and result['truncated'] == 20
+    source.write_text(columns + 'baseline,30,40,50,300,42,82,20\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='Overall does not match'):
+        _import_baseline(source)
 
 
 def test_part1_handoff_autodetects_completed_run_and_preserves_part2(tmp_path):
@@ -158,6 +180,19 @@ def test_mass_preserved_with_underflow_and_zero_visual_mass():
     assert not torch.any(merge[:, 1:])
 
 
+def test_mask_top_five_uses_same_ranked_tokens_as_keep_top_five():
+    order = torch.arange(383, -1, -1).unsqueeze(0)
+    keep = _keep_positions('top5', order, 384, order.device)
+    assert (~keep).nonzero()[:, 1].tolist() == list(range(365, 384))
+    assert torch.equal(~keep, _keep_positions('keep5', order, 384, order.device))
+    probs = torch.full((1, 384), 0.5 / 384)
+    masked, _ = visual_weights(probs, probs.log(), keep, 'top5')
+    preserved, _ = visual_weights(probs, probs.log(), keep, 'top5', preserve_mass=True)
+    assert masked.sum() < probs.sum()
+    assert not preserved[~keep].any()
+    torch.testing.assert_close(preserved.sum(), probs.sum())
+
+
 def test_baseline_greedy_matches_native_and_deep_cache_lengths():
     native, processor = tiny_components()
     model = CachedSmolVLM(native, processor)
@@ -175,6 +210,9 @@ def test_baseline_greedy_matches_native_and_deep_cache_lengths():
         ('input_ids', 'attention_mask', 'visual_features')}, generation_config=config)
     actual, ranks, _, _ = decoder.generate(encoded, projected, VARIANTS[0], 3)
     torch.testing.assert_close(actual, native_tokens)
+    prefill_ranks = decoder.rank_tokens(encoded, projected, (1, 2))
+    for layer in (1, 2):
+        torch.testing.assert_close(prefill_ranks[layer], ranks[layer])
     no_ranks, saved_ranks, _, _ = decoder.generate(encoded, projected, VARIANTS[0], 3, rank_layers=())
     torch.testing.assert_close(no_ranks, native_tokens)
     assert not saved_ranks
@@ -183,9 +221,10 @@ def test_baseline_greedy_matches_native_and_deep_cache_lengths():
     torch.testing.assert_close(*last_tokens)
     decoder.verify_native(encoded, projected, VARIANTS[0])
     assert ranks[1].shape == (2, 24)
-    intervention = Variant('top', 'Top', (1,), 'top10', preserve_mass=True)
-    _, _, mass, _ = decoder.generate(encoded, projected, intervention, 3, rankings=ranks)
-    assert (mass[:, 0] > 0).all()
+    for mode in ('top5', 'top10'):
+        intervention = Variant('top', 'Top', (1,), mode, preserve_mass=True)
+        _, _, mass, _ = decoder.generate(encoded, projected, intervention, 3, rankings=ranks)
+        assert (mass[:, 0] > 0).all()
 
     width = batch['input_ids'].shape[1]
     for mode, expected in (('skip', [width - 24, width]), ('discard', [width - 24, width - 24])):

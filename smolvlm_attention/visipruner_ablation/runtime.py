@@ -12,7 +12,7 @@ from smolvlm_attention.mvpruner_ablation.data import (
 )
 
 from .design import MERGE_SEEDS, RANK_LAYERS, SAMPLE_COUNT, SEED, merge_positions, select_indices, yes_no
-from .suites import SUITES, suite_variants
+from .suites import MIDDLE_SWEEP, SUITES, suite_variants
 
 
 # Source digest of runtime.py in the released single-GPU runner.
@@ -20,6 +20,9 @@ _SINGLE_GPU_RUNTIME = 'dd6f4634e1a5857ee2e3b75095af984e88ff56cc1e5aa935ee53f413c
 _PRE_SWEEP_RUNTIME = '7de511b8237294b4ac565df5f02b5c29172f1e7e67ba26d66f6556b86126beb7'
 _PRE_SWEEP_DECODER = '659ab8491304258e694aa085d48a0ddfc1acb4b9cea16948c757b0b000e97247'
 _PRE_BASELINE_PAIR_RUNTIME = 'a3a14a42a493393fad70d83e67fdd3979cb0a4689271288efbe9cb86e5e2b3c7'
+_PRE_MIDDLE_RUNTIME = '16df4a9d66bcf8638b46c236f993089f46533c647fc470847dae074d424108aa'
+_PRE_MIDDLE_DECODER = '1580d70ec02ce94d2dfcfc66f832b30bc0411850bd1462a9a03b019d7197e764'
+_PRE_MIDDLE_SUITES = 'cfa27655f41e0cc41a138596af6f71440c2e7ea0a3350dad8d6cd6882f31282c'
 
 
 def prepare(test_file, image_root, output, count=None, *, suite='original'):
@@ -29,9 +32,9 @@ def prepare(test_file, image_root, output, count=None, *, suite='original'):
     records = json.loads(payload)
     if len(records) != TEST_COUNT:
         raise ValueError(f'Expected {TEST_COUNT} questions in the input split')
-    if suite == 'deep-full':
+    if suite != 'original':
         if count not in (None, TEST_COUNT):
-            raise ValueError('The deep-full suite requires the complete test split')
+            raise ValueError(f'The {suite} suite requires the complete test split')
         count, indices = TEST_COUNT, range(TEST_COUNT)
     else:
         count = SAMPLE_COUNT if count is None else count
@@ -94,6 +97,8 @@ def _code_identity(runtime_digest=None, *, pre_sweep=True):
     overrides = {package / 'runtime.py': runtime_digest}
     if runtime_digest is not None and pre_sweep:
         overrides[package / 'decoder.py'] = _PRE_SWEEP_DECODER
+    elif runtime_digest is not None:
+        overrides.update({package / 'decoder.py': _PRE_MIDDLE_DECODER, package / 'suites.py': _PRE_MIDDLE_SUITES})
     digests = [overrides.get(path) or file_sha256(path) for path in code]
     return sha256(''.join(digests).encode()).hexdigest()
 
@@ -103,7 +108,8 @@ def _bind(path, identity):
         existing = json.loads(path.read_bytes())
         # Earlier schedulers used the same generation and intervention math.
         legacy_codes = (_code_identity(_SINGLE_GPU_RUNTIME), _code_identity(_PRE_SWEEP_RUNTIME),
-                        _code_identity(_PRE_BASELINE_PAIR_RUNTIME, pre_sweep=False))
+                        _code_identity(_PRE_BASELINE_PAIR_RUNTIME, pre_sweep=False),
+                        _code_identity(_PRE_MIDDLE_RUNTIME, pre_sweep=False))
         if existing != identity and not any(existing == dict(identity, code=code) for code in legacy_codes):
             raise ValueError('Checkpoint, data, decoding settings or measurement code changed; use a new output directory')
     else:
@@ -132,6 +138,40 @@ def _projected(model, output, frame_id, frame, manifest, image_root):
     return projected
 
 
+def _ensure_rankings(decoder, encoder, rows, projected, rank_file, batch_size, logger):
+    from filelock import FileLock
+    import numpy as np
+    import torch
+
+    if rank_file.is_file():
+        return
+    rank_file.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(rank_file.with_suffix('.lock'))):
+        if rank_file.is_file():
+            return
+        layers = MIDDLE_SWEEP[0].layers
+        encoded = [encoder.encode(row['question']) for row in rows]
+        parts = {layer: [] for layer in layers}
+        start = 0
+        while start < len(encoded):
+            try:
+                ranks = decoder.rank_tokens(encoded[start:start + batch_size], projected, layers)
+            except torch.cuda.OutOfMemoryError:
+                if batch_size == 1:
+                    raise
+            else:
+                for layer, order in ranks.items():
+                    parts[layer].append(order.numpy().astype(np.uint16))
+                start += batch_size
+                continue
+            torch.cuda.empty_cache()
+            batch_size = max(1, batch_size // 2)
+            logger.warning('CUDA OOM in ranking prefill. Retrying with batch size %s', batch_size)
+        with atomic_output(rank_file) as stream:
+            np.savez_compressed(stream, ids=[row['id'] for row in rows],
+                                **{str(layer): np.concatenate(pieces) for layer, pieces in parts.items()})
+
+
 def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file, recipient, batch_size, logger,
                    rank_layers):
     import numpy as np
@@ -141,7 +181,7 @@ def _measure_frame(decoder, encoder, rows, projected, variant, limit, rank_file,
     rank_layers = tuple(layer for layer in rank_layers if layer <= len(decoder.text.layers))
     rank_parts = {layer: [] for layer in rank_layers}
     ranking = {}
-    if variant.mode in ('top10', 'keep10', 'bottom10', 'keep5'):
+    if variant.mode in ('top5', 'top10', 'keep10', 'bottom10', 'keep5'):
         with np.load(rank_file, allow_pickle=False) as saved:
             if not np.array_equal(saved['ids'], [row['id'] for row in rows]):
                 raise ValueError(f'Mismatched baseline rankings in {rank_file}')
@@ -201,10 +241,13 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
     torch.cuda.set_device(device)
     manifest_path = output / 'manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
+    suite = manifest.get('suite', 'original')
     variants = suite_variants(manifest)
     if variant not in variants:
         raise ValueError(f'{variant.name} is not part of the suite in {manifest_path}')
-    rank_layers = RANK_LAYERS if manifest.get('suite', 'original') == 'original' else ()
+    if suite == 'middle-full' and limit != 512:
+        raise ValueError('The middle-full suite requires --max-new-tokens 512 to match the imported baseline')
+    rank_layers = RANK_LAYERS if suite == 'original' else ()
     logger = _logger(output, variant.name)
     spec = MODELS['base']
     lock_folder = output / 'locks'
@@ -245,13 +288,16 @@ def run(output, image_root, variant, *, batch_size, limit, checkpoint, gpu=0):
             with tqdm(total=total, initial=done, desc=variant.name, unit='question') as bar:
                 for index, (frame_id, frame) in enumerate(pending):
                     projected = _projected(model, output, frame_id, frame, manifest, image_root)
+                    rank_file = output / 'rankings' / f'{frame_id}.npz'
+                    if suite == 'middle-full':
+                        _ensure_rankings(decoder, encoder, frame['rows'], projected, rank_file, batch_size, logger)
                     if index == 0 and variant.mode == 'baseline':
                         probes = [encoder.encode(row['question']) for row in frame['rows'][:2]]
                         decoder.verify_native(probes, projected, variant)
                         logger.info('Baseline greedy-token parity with native SmolVLM passed')
                     results, batch_size = _measure_frame(
                         decoder, encoder, frame['rows'], projected, variant, limit,
-                        output / 'rankings' / f'{frame_id}.npz', recipient, batch_size, logger, rank_layers,
+                        rank_file, recipient, batch_size, logger, rank_layers,
                     )
                     write_json(directory / f'{frame_id}.json', results)
                     done += len(results)

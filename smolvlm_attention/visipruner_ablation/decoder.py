@@ -38,7 +38,10 @@ def _keep_positions(mode, order, visual_count, device):
     if mode in ('keep5', 'keep10'):
         count = five if mode == 'keep5' else ten
         return torch.zeros_like(order, dtype=torch.bool).scatter(1, order[:, :count], True)
-    indices = order[:, :ten] if mode == 'top10' else order[:, -ten:]
+    if mode == 'top5':
+        indices = order[:, :five]
+    else:
+        indices = order[:, :ten] if mode == 'top10' else order[:, -ten:]
     return torch.ones_like(order, dtype=torch.bool).scatter(1, indices, False)
 
 
@@ -142,6 +145,32 @@ class Decoder:
         return layer(hidden, attention_mask=allowed, position_ids=positions, past_key_value=cache,
                      position_embeddings=self.text.rotary_emb(hidden, positions), use_cache=True)[0]
 
+    def _rank_layer(self, layer, hidden, valid, positions, cache, question, visual_indices):
+        def capture(attn, _, kwargs):
+            ranks.append(_rank(attn, kwargs['hidden_states'], kwargs['position_embeddings'],
+                               kwargs['attention_mask'], question, visual_indices))
+
+        ranks = []
+        handle = layer.self_attn.register_forward_pre_hook(capture, with_kwargs=True)
+        try:
+            hidden = self._layer(layer, hidden, valid, positions, cache, prefill=True)
+        finally:
+            handle.remove()
+        return hidden, ranks[0]
+
+    @torch.inference_mode()
+    def rank_tokens(self, encoded, projected, rank_layers):
+        """Collect clean prefill rankings without decoding an answer."""
+        _, hidden, valid, question, _, visual_indices, positions = self._inputs(encoded, projected)
+        ranks = {}
+        for index, layer in enumerate(self.text.layers[:max(rank_layers)], 1):
+            if index in rank_layers:
+                hidden, order = self._rank_layer(layer, hidden, valid, positions, None, question, visual_indices)
+                ranks[index] = order.cpu()
+            else:
+                hidden = self._layer(layer, hidden, valid, positions, None, prefill=True)
+        return ranks
+
     @torch.inference_mode()
     def generate(self, encoded, projected, variant, limit, *, rankings=None, recipient=None, rank_layers=RANK_LAYERS):
         _, hidden, valid, question, visual, visual_indices, positions = self._inputs(encoded, projected)
@@ -166,15 +195,8 @@ class Decoder:
                 continue
             keys.append(valid)
             if variant.mode == 'baseline' and index in rank_layers:
-                def capture(attn, _, kwargs):
-                    ranks[index] = _rank(attn, kwargs['hidden_states'], kwargs['position_embeddings'],
-                                         kwargs['attention_mask'], question, visual_indices)
-                handle = layer.self_attn.register_forward_pre_hook(capture, with_kwargs=True)
-                try:
-                    hidden = self._layer(layer, hidden, valid, positions, cache, prefill=True)
-                finally:
-                    handle.remove()
-            elif variant.mode in ('top10', 'bottom10', 'keep5', 'keep10', 'mask_all', 'merge') and index in variant.layers:
+                hidden, ranks[index] = self._rank_layer(layer, hidden, valid, positions, cache, question, visual_indices)
+            elif variant.mode in ('top5', 'top10', 'bottom10', 'keep5', 'keep10', 'mask_all', 'merge') and index in variant.layers:
                 attention = layer.self_attn
                 order = rankings[index] if rankings is not None else None
                 attention.forward = _intervened_attention(attention, variant, visual_indices, affected,

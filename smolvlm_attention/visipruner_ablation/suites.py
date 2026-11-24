@@ -1,6 +1,6 @@
 """Choose the original matrix or the full-test deep layer sweep."""
 
-from .design import VARIANTS, Variant
+from .design import VARIANTS, Variant, _middle
 
 
 DEEP_LAYERS = tuple(range(24, 31))
@@ -9,7 +9,14 @@ DEEP_SWEEP = (
     *(Variant(f'deep-discard-{layer}', f'Layer {layer} · Discard token ảnh', (layer,), 'discard')
       for layer in DEEP_LAYERS),
 )
-SUITES = {'original': VARIANTS, 'deep-full': DEEP_SWEEP}
+MIDDLE_CONTROLS = (('keep5', 'Chỉ giữ top 5%'), ('keep10', 'Chỉ giữ top 10%'),
+                   ('top10', 'Mask top 10%'), ('top5', 'Mask top 5%'))
+MIDDLE_FULL_RANGE = (20, 24)
+MIDDLE_SWEEP = tuple(
+    _middle(*MIDDLE_FULL_RANGE, mode, title, preserve=preserve)
+    for mode, title in MIDDLE_CONTROLS for preserve in (False, True)
+)
+SUITES = {'original': VARIANTS, 'deep-full': DEEP_SWEEP, 'middle-full': MIDDLE_SWEEP}
 RUN_VARIANTS = {variant.name: variant for variants in SUITES.values() for variant in variants}
 
 

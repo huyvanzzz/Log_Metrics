@@ -38,6 +38,22 @@ phiên bản PyTorch và cấu hình sinh để tiếp tục. Cả baseline và 
 greedy với trần 512 token. Cell chấm điểm và vẽ xuất bảng điểm và hai hình riêng cho
 ΔOverall và ΔYes/No accuracy so với baseline toàn tập.
 
+## Middle trên toàn bộ test với và không bảo toàn mass
+
+Dùng `notebooks/kaggle_smolvlm_visipruner_middle_full.ipynb` để đo trên
+**16.817 câu test**, greedy với trần **512 token**. Có **8 cấu hình** tại
+layer 20–24, với bốn cách chọn token (giữ top 5%, giữ top 10%,
+mask top 10%, mask top 5%) và hai chế độ (mask trực tiếp hoặc bảo toàn
+tổng attention lên ảnh). Trên hai GPU, mỗi cặp đối chứng chạy song song.
+
+Notebook dùng hàng baseline từ bảng điểm Deep Discard đã có. Có thể dùng
+`BASELINE_SCORES` để trỏ đến bảng điểm khác của cùng lượt baseline toàn tập,
+với cùng checkpoint và cấu hình sinh. Dự đoán baseline không được sinh lại.
+Thứ hạng token được tính bằng prefill gốc khi cần, sau đó lưu và dùng chung
+giữa các cấu hình. Kết quả lưu trong
+`/kaggle/working/visipruner_middle_20_24_preserve_512_outputs` và có thể phục hồi qua
+`RESUME_FROM`. Hai hình cuối báo cáo ΔOverall và ΔYes/No so với mốc đã nhập.
+
 ## Lưu tiến độ
 
 Trong ma trận ablation 25%, baseline chạy trên GPU 0 và lưu thứ hạng token ảnh cho các lượt mask. Sau
