@@ -108,3 +108,69 @@ def test_projected_input_reuse_does_not_access_raw(tmp_path):
     artifacts = dict(model={'checkpoint': str(checkpoint)}, prepared_dir=str(prepared),
                      cache_dir=str(tmp_path / 'RAW_DOES_NOT_EXIST'))
     assert resolve_projected({}, artifacts, model, tmp_path / 'output', projected_input=str(projected)) == str(projected)
+
+def test_parity_failure_saves_scale_and_fp64_diagnostics_without_changing_guard(tmp_path,monkeypatch):
+    import torch
+    import smolvlm_predictor_io.projected as projected
+    from test_smolvlm_pruned_decoder import fixture
+    backbone,batch=fixture()
+    raw=batch['visual_features'].numpy()
+    original=projected.project_native
+    def shifted(model,values):
+        result=original(model,values).copy()
+        if len(values)>1: result[0,0,0,0]+=0.01
+        return result
+    monkeypatch.setattr(projected,'project_native',shifted)
+    weights={k:v.clone() for k,v in backbone.state_dict().items()};rng=torch.get_rng_state().clone()
+    path=tmp_path/'parity.json'
+    with pytest.raises(ValueError,match='batching parity failed'):
+        projected.verify_native_parity(backbone,raw,report_path=path)
+    report=json.loads(path.read_text())
+    assert report['ok'] is False and report['rtol']==1e-5 and report['atol']==1e-6
+    assert report['mismatched_elements']>=1 and report['reference_abs_max']>0
+    assert report['fp64_reference']['scope']=='selected_projection_elements_cpu_float64'
+    first=next(x for x in report['fp64_reference']['elements'] if x['index']==[0,0,0,0])
+    connector=backbone.native.model.connector
+    source=connector.pixel_shuffle(torch.from_numpy(raw[0,0])[None],connector.scale_factor).double()
+    expected=torch.nn.functional.linear(source,connector.modality_projection.proj.weight.double())[0,0,0].item()
+    assert first['fp64_value']==pytest.approx(expected,rel=1e-12,abs=1e-12)
+    assert first['batch_abs_error']>first['singleton_abs_error']
+    assert all(torch.equal(v,weights[k]) for k,v in backbone.state_dict().items())
+    assert torch.equal(rng,torch.get_rng_state())
+
+
+def test_parity_pass_remains_strict_and_writes_small_report(tmp_path):
+    from test_smolvlm_pruned_decoder import fixture
+    from smolvlm_predictor_io.projected import verify_native_parity
+    model,batch=fixture();path=tmp_path/'parity.json'
+    report=verify_native_parity(model,batch['visual_features'].numpy(),report_path=path)
+    assert report['ok'] and report['mismatched_elements']==0
+    assert 'fp64_reference' not in report
+    assert json.loads(path.read_text())==report
+
+def test_nonfinite_parity_stops_and_persists_finite_false(tmp_path,monkeypatch):
+    import smolvlm_predictor_io.projected as projected
+    from test_smolvlm_pruned_decoder import fixture
+    model,batch=fixture();original=projected.project_native
+    def corrupt(model,values):
+        result=original(model,values).copy();result[0,0,0,0]=np.nan;return result
+    monkeypatch.setattr(projected,'project_native',corrupt)
+    path=tmp_path/'parity.json'
+    with pytest.raises(ValueError,match='batching parity failed'):
+        projected.verify_native_parity(model,batch['visual_features'].numpy(),report_path=path)
+    report=json.loads(path.read_text());assert not report['ok'] and not report['finite']
+    assert 'fp64_reference' not in report
+
+
+def test_zero_reference_cancellation_diagnostics_are_json_safe():
+    from smolvlm_predictor_io.parity_diagnostics import comparison_report,fp64_selected_reference
+    from test_smolvlm_pruned_decoder import fixture
+    model,batch=fixture();raw=batch['visual_features'].numpy()
+    import torch
+    with torch.no_grad():model.native.model.connector.modality_projection.proj.weight.zero_()
+    reference=np.zeros((len(raw),6,model.geometry['visual_tokens_per_view'],model.geometry['text_dim']),np.float32)
+    changed=reference.copy();changed[0,0,0,0]=.01
+    report,details=comparison_report(changed,reference,1e-5,1e-6)
+    report['fp64_reference']=fp64_selected_reference(model,raw,changed,reference,details)
+    json.dumps(report,allow_nan=False)
+    assert all(x['cancellation_ratio'] is None for x in report['fp64_reference']['elements'])

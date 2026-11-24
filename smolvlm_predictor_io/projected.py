@@ -171,22 +171,36 @@ def project_native(backbone, raw_batch):
         return result.reshape(len(raw_batch), 6, *result.shape[-2:]).cpu().numpy()
 
 
-def verify_native_parity(backbone, raw_batch, *, rtol=1e-5, atol=1e-6):
-    """Measure production-vs-single-group GEMM batching before cache publication.
+def verify_native_parity(backbone, raw_batch, *, rtol=1e-5, atol=1e-6, report_path=None):
+    """Retain strict allclose; diagnose failures without changing acceptance.
 
-    This is a numerical guard, not a promise of bitwise CUDA equivalence. Caller
-    must stop on failure rather than modifying tolerance to accept its hardware.
+    FP64 comparison is limited to selected output elements and never runs on a
+    passing batch. No fallback, changed tolerance, or alternate cache data is used.
     """
+    import torch
+    from .parity_diagnostics import comparison_report, fp64_selected_reference
     batch = project_native(backbone, raw_batch)
     reference = np.concatenate([project_native(backbone, raw_batch[i:i + 1])
                                 for i in range(len(raw_batch))], axis=0)
-    error = batch.astype(np.float64) - reference.astype(np.float64)
-    report = dict(max_abs_error=float(np.abs(error).max()),
-                  relative_l2=float(np.linalg.norm(error.ravel()) /
-                                    max(np.linalg.norm(reference.astype(np.float64).ravel()), 1e-30)),
-                  rtol=rtol, atol=atol)
-    if not np.allclose(batch, reference, rtol=rtol, atol=atol):
-        raise ValueError(f'Projected FP32 connector batching parity failed: {report}')
+    report, details = comparison_report(batch, reference, rtol, atol)
+    weight = next(backbone.native.model.connector.parameters())
+    report['precision'] = dict(device=str(weight.device), connector_dtype=str(weight.dtype),
+        matmul_precision=torch.get_float32_matmul_precision(),
+        cuda_matmul_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
+        cudnn_allow_tf32=torch.backends.cudnn.allow_tf32)
+    if not report['ok'] and report['finite']:
+        try:
+            report['fp64_reference'] = fp64_selected_reference(backbone, raw_batch, batch, reference, details)
+        except Exception as exc:
+            # Preserve the original failed guard even if extra diagnostics fail.
+            report['fp64_diagnostic_error'] = f'{type(exc).__name__}: {exc}'
+    if report_path is not None:
+        atomic_json(report_path, report)
+    if not report['ok']:
+        summary = {key: report[key] for key in ('finite', 'max_abs_error', 'relative_l2',
+            'mismatched_elements', 'mismatch_fraction', 'rtol', 'atol') if key in report}
+        location = f'; diagnostic report: {report_path}' if report_path is not None else ''
+        raise ValueError(f'Projected FP32 connector batching parity failed: {summary}{location}')
     return report
 
 

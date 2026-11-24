@@ -58,7 +58,7 @@ def resolve_projected(cfg, artifacts, model, output_dir, projected_input='', pro
                     checkpoint_sha256=digest(checkpoint), model=model.architecture_signature)
     session = uuid.uuid4().hex
     spec = dict(identity=identity, raw_dir=str(raw_dir), checkpoint=str(Path(checkpoint).resolve()),
-                output=str(directory), gate=str(internal / session), world_size=2, batch_size=32,
+                output=str(directory), gate=str(internal / session), diagnostic_report_dir=str(logs.resolve()), world_size=2, batch_size=32,
                 projected_shape=[6, model.geometry['visual_tokens_per_view'], model.geometry['text_dim']])
     spec_path = internal / f'{session}.json'
     atomic_json(spec_path, spec)
@@ -116,7 +116,8 @@ def build_worker(spec_path, rank):
     rows = list(range(rank, len(raw), spec['world_size']))[:spec['batch_size']]
     if not rows:
         raise ValueError('Projected builder empty rank shard')
-    parity = verify_native_parity(model, np.asarray(raw[rows], dtype=np.float32))
+    report_path = Path(spec['diagnostic_report_dir']) / f'projected_parity_rank_{rank}.json'
+    parity = verify_native_parity(model, np.asarray(raw[rows], dtype=np.float32), report_path=report_path)
     gate = Path(spec['gate'])
     gate.mkdir(parents=True, exist_ok=True)
     atomic_json(gate / f'{rank}.json', parity)
