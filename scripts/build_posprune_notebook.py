@@ -13,8 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def source_bundle():
     files = list((ROOT / 'smolvlm_inference').glob('*.py'))
     attention = ROOT / 'smolvlm_attention'
-    files += [attention / name for name in ('__init__.py', 'collector.py', 'config.py', 'plotting.py')]
+    files += [attention / name for name in ('__init__.py', 'collector.py', 'config.py', 'data.py', 'plotting.py')]
     files += list((attention / 'posprune_ablation').glob('*.py'))
+    files.append(attention / 'posprune_ablation/test_question_types.json')
     files += [ROOT / 'smolvlm_inference/requirements.txt', attention / 'requirements.txt']
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
@@ -37,16 +38,23 @@ def main():
         cell('markdown', '''
 # SmolVLM decoder-only PosPrune ablation
 
-Enable a Kaggle GPU and Internet. Attach `huyhuy12334/cache-smolvlm` version 1 as an Input if available. The notebook uses the pinned base checkpoint and prepared data and reads the mounted cache directly. The first cache validation scans the full payload.
+Select **GPU T4 ×2** in Kaggle and enable Internet. Attach `huyhuy12334/cache-smolvlm` version 1 as an Input if available. The notebook validates the mounted cache once and splits calibration and evaluation questions between two workers. It uses one worker if only one GPU is visible.
 
-The cubic is fitted once on validation attention differences from layers 3 and 22. Generation compares the unpruned checkpoint with raw top-k, corrected top-k, and corrected + MMR at each budget, using the existing FP32 and three-beam settings. This notebook includes its Python source snapshot and can run independently of a Git branch. Regenerate it with `python scripts/build_posprune_notebook.py` after editing the source.
+Evaluation uses a seeded, stratified 50% test sample with the original question-type proportions. The notebook prints the full and selected counts for perception, prediction, planning, and behavior. Calibration still uses 800 separate validation questions.
 
-The first-beam-step timing ends when beam search selects its first candidates. Generation timings start after the inputs are on the GPU and include projection, pruning, and decoding in the model.
+The cubic is fitted once on validation attention differences from layers 3 and 22. The unpruned baseline and all pruning variants use FP32 greedy decoding, with up to 512 new tokens. Each GPU starts with four questions per generation batch. If a CUDA out-of-memory error occurs, that worker halves its generation batch and retries the same questions for all variants.
+
+The notebook includes its Python source snapshot. Regenerate it with `python scripts/build_posprune_notebook.py` after editing the source.
+
+First-token and generation latency are measured once per batch, after inputs reach the GPU. The comparison table also reports model throughput in questions per GPU-second.
+`parallel_timing.json` records elapsed time for the shared cache scan, checkpoint loading and prefill, and paired generation across both GPUs.
 '''),
         cell('code', '''
+GPU_COUNT = 2
 CALIBRATION_SIZE = 800
-EVALUATION_SIZE = 100  # Set to None for the full test split.
-CALIBRATION_BATCH = 4  # Answer generation always uses batch 1.
+EVALUATION_FRACTION = 0.50  # Stratified by question type. Set to 1.0 for the full test split.
+CALIBRATION_BATCH = 4  # Per GPU.
+GENERATION_BATCH = 4   # Per GPU, with automatic CUDA OOM backoff.
 KEEP_COUNTS = (192, 96, 48)
 SEED = 42
 SELECTION_EXAMPLES = 3  # Save full ranked selections for the first evaluation examples.
@@ -84,12 +92,16 @@ import tokenizers
 from huggingface_hub import hf_hub_download
 import kagglehub
 from smolvlm_attention.config import MODELS, CACHE_DATASET, CACHE_FINGERPRINT, PREPARED_REPO, PREPARED_REVISION
-from smolvlm_inference.session import InferenceSession
 
 if (transformers.__version__, tokenizers.__version__) != ('4.46.3', '0.20.4'):
     raise RuntimeError('Restart the kernel after dependency installation and Run All.')
-if not torch.cuda.is_available():
+visible_gpus = torch.cuda.device_count()
+if visible_gpus == 0:
     raise RuntimeError('Enable a Kaggle GPU accelerator.')
+if GPU_COUNT < 1:
+    raise ValueError('GPU_COUNT must be at least 1.')
+worker_count = min(GPU_COUNT, visible_gpus)
+print(f'Using {worker_count} of {visible_gpus} visible GPU(s).')
 
 work = Path('/kaggle/working/smolvlm-posprune')
 prepared_dir = work / 'prepared_data'
@@ -104,18 +116,18 @@ caches = [path.parent for path in cache_root.rglob('features.float16.memmap')
           if (path.parent / 'manifest.json').is_file() and (path.parent / 'index.json').is_file()]
 if len(caches) != 1:
     raise RuntimeError(f'Expected exactly one complete cache under {cache_root}, found {len(caches)}.')
-session = InferenceSession(checkpoint, caches[0], prepared_dir, device='cuda:0')
-if session.cache.manifest['fingerprint'] != CACHE_FINGERPRINT or session.model.prompt_camera_order != base['camera_order']:
-    raise RuntimeError('The cache identity or checkpoint camera order differs from the pinned baseline.')
-print(session.describe())
 '''),
         cell('code', '''
-from smolvlm_attention.posprune_ablation.runtime import run
+from smolvlm_attention.posprune_ablation.parallel import run_parallel
 
 run_dir = Path(tempfile.mkdtemp(prefix='run-', dir=work))
-output = run(session, run_dir / 'results', calibration_size=CALIBRATION_SIZE,
-             evaluation_size=EVALUATION_SIZE, calibration_batch=CALIBRATION_BATCH,
-             keep_counts=KEEP_COUNTS, seed=SEED, selection_examples=SELECTION_EXAMPLES)
+output = run_parallel(checkpoint, caches[0], prepared_dir, run_dir / 'results',
+                      cache_fingerprint=CACHE_FINGERPRINT, camera_order=base['camera_order'], gpu_count=worker_count,
+                      calibration_size=CALIBRATION_SIZE, evaluation_size=None, evaluation_fraction=EVALUATION_FRACTION,
+                      calibration_batch=CALIBRATION_BATCH, generation_batch=GENERATION_BATCH,
+                      keep_counts=KEEP_COUNTS, seed=SEED,
+                      selection_examples=SELECTION_EXAMPLES)
+print((output / 'parallel_timing.json').read_text())
 print(output)
 '''),
         cell('code', '''
@@ -125,8 +137,13 @@ from smolvlm_attention.posprune_ablation.report import report
 for path in report(output):
     if path.suffix == '.png':
         display(Image(filename=str(path)))
-archive = Path(shutil.make_archive(str(run_dir / 'posprune-results'), 'zip', root_dir=output))
-tables = [output / name for name in ('indexed_selections.csv', 'comparison.csv', 'paired_answers.csv')]
+archive = run_dir / 'posprune-results.zip'
+with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
+    for path in sorted(output.iterdir()):
+        if path.is_file():
+            bundle.write(path, path.name)
+tables = [output / name for name in ('indexed_selections.csv', 'comparison.csv', 'paired_answers.csv',
+                                      'question_type_distribution.csv')]
 for path in (*tables, archive):
     display(FileLink(os.path.relpath(path)))
 '''),

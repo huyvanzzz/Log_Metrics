@@ -45,45 +45,63 @@ def attention_difference(model, batch, shallow, deep):
 
 
 def topk(scores, count):
-    return scores.argsort(descending=True, stable=True)[:count]
+    return scores.argsort(descending=True, stable=True)[..., :count]
 
 
 def mmr(relevance, states, count, weight):
     """Select by relevance and maximum cosine similarity to earlier picks."""
+    single = relevance.ndim == 1
+    if single:
+        relevance, states = relevance[None], states[None]
     unit = normalize(states, dim=-1)
-    similarity = unit @ unit.T
+    similarity = unit @ unit.transpose(1, 2)
     selected = torch.zeros_like(relevance, dtype=torch.bool)
     redundancy = torch.full_like(relevance, -torch.inf)
     scores = relevance
     picks, penalties = [], []
     for step in range(count):
-        pick = scores.masked_fill(selected, -torch.inf).argmax().view(1)
+        pick = scores.masked_fill(selected, -torch.inf).argmax(dim=1, keepdim=True)
         picks.append(pick)
-        penalties.append(redundancy.index_select(0, pick) if step else relevance.new_zeros(1))
-        selected.scatter_(0, pick, True)
-        redundancy = torch.maximum(redundancy, similarity.index_select(0, pick).squeeze(0))
+        penalties.append(redundancy.gather(1, pick) if step else relevance.new_zeros(pick.shape))
+        selected.scatter_(1, pick, True)
+        candidate = similarity.gather(1, pick[..., None].expand(-1, -1, relevance.shape[1])).squeeze(1)
+        redundancy = torch.maximum(redundancy, candidate)
         scores = weight * relevance - (1 - weight) * redundancy
-    return torch.cat(picks), torch.cat(penalties)
+    indices, penalties = torch.cat(picks, dim=1), torch.cat(penalties, dim=1)
+    return (indices[0], penalties[0]) if single else (indices, penalties)
+
+
+def _gather_rows(tensor, positions):
+    """Gather sequence columns independently for each batch row."""
+    tensor = tensor.expand(len(positions), *tensor.shape[1:])
+    shape = (*positions.shape, *([1] * (tensor.ndim - 2)))
+    return tensor.gather(1, positions.reshape(shape).expand(*positions.shape, *tensor.shape[2:]))
+
+
+def _gather_mask_keys(mask, positions):
+    return mask.gather(-1, positions[:, None, None, :].expand(-1, *mask.shape[1:3], -1))
 
 
 class _PrunePrompt:
     def __init__(self, inputs, image_id, curve, count, method, weight):
-        ids, self.valid = inputs['input_ids'], inputs['attention_mask']
-        if ids.shape[0] != 1 or not bool(self.valid.all()):
-            raise ValueError('Pruned generation requires one unpadded prompt per call')
+        ids, mask = inputs['input_ids'], inputs['attention_mask']
+        self.valid = mask.bool()
+        if not bool(self.valid[:, -1].all()) or bool((self.valid[:, :-1] & ~self.valid[:, 1:]).any()):
+            raise ValueError('Pruned generation requires nonempty left-padded prompts')
         self.width = ids.shape[1]
-        self.last = ids.new_tensor([self.width - 1])
-        self.visual = (ids[0] == image_id).nonzero().flatten()
-        if len(self.visual) != len(curve) or not 1 <= count <= len(curve):
+        self.last = ids.new_full((len(ids),), self.width - 1)
+        visual = (ids == image_id) & self.valid
+        if not 1 <= count <= len(curve) or not bool((visual.sum(1) == len(curve)).all()):
             raise ValueError('Invalid visual positions, curve, or keep count')
+        self.visual = visual.nonzero()[:, 1].view(len(ids), len(curve))
         self.curve, self.count, self.method, self.weight = curve, count, method, weight
         self.raw = self.corrected = self.picks = self.penalties = self.kept = None
         self.prefill_mask = None
 
     def capture(self, attn, args, kwargs):
         if self.raw is None:
-            # The pinned generation path duplicates one prompt across all beams.
-            self.raw = _visual_attention(attn, kwargs, self.valid, self.last, self.visual[None])[0]
+            # If beam search is used, every beam starts from the same prompt.
+            self.raw = _visual_attention(attn, kwargs, self.valid, self.last, self.visual)
             self.corrected = self.raw - self.curve
 
     def prune(self, layer, args, outputs):
@@ -91,36 +109,41 @@ class _PrunePrompt:
             return
         hidden = outputs[0]
         if self.method == 'mmr':
-            states = hidden[0].index_select(0, self.visual)
+            states = _gather_rows(hidden[:len(self.visual)], self.visual)
             self.picks, self.penalties = mmr(self.corrected, states, self.count, self.weight)
         else:
             relevance = self.raw if self.method == 'raw' else self.corrected
             self.picks = topk(relevance, self.count)
-        keep = torch.ones(self.width, device=hidden.device, dtype=torch.bool)
-        keep[self.visual] = False
-        keep[self.visual.index_select(0, self.picks)] = True
-        self.kept = keep.nonzero().flatten()
-        return (hidden.index_select(1, self.kept), *outputs[1:])
+        keep = torch.ones_like(self.valid)
+        keep.scatter_(1, self.visual, False)
+        keep.scatter_(1, self.visual.gather(1, self.picks), True)
+        self.kept = keep.nonzero()[:, 1].view(len(self.visual), -1).expand(len(hidden), -1)
+        return (_gather_rows(hidden, self.kept), *outputs[1:])
 
     def adjust(self, layer, args, kwargs):
         # Lower layers retain full KV history. DynamicCache and HF beam reordering
         # allow later layers to store only compact history, with original RoPE IDs.
         if not isinstance(kwargs['past_key_value'], DynamicCache):
-            raise RuntimeError('PosPrune requires native DynamicCache during beam search')
+            raise RuntimeError('PosPrune requires native DynamicCache during generation')
         mask = kwargs['attention_mask']
+        if mask is not None:
+            mask = mask.expand(len(self.kept), *mask.shape[1:])
         positions = kwargs['cache_position']
         if positions.numel() == self.width:
-            kwargs['cache_position'] = positions.index_select(0, self.kept)
-            kwargs['position_ids'] = kwargs['position_ids'].index_select(1, self.kept)
-            kwargs['position_embeddings'] = tuple(value.index_select(1, self.kept)
+            # DynamicCache appends by physical length. Original per-row positions
+            # still drive RoPE and the gathered attention mask.
+            kwargs['cache_position'] = positions[:self.kept.shape[1]]
+            kwargs['position_ids'] = _gather_rows(kwargs['position_ids'], self.kept)
+            kwargs['position_embeddings'] = tuple(_gather_rows(value, self.kept)
                                                    for value in kwargs['position_embeddings'])
             if mask is not None:
                 if self.prefill_mask is None:
-                    self.prefill_mask = mask.index_select(-2, self.kept).index_select(-1, self.kept)
+                    queries = self.kept[:, None, :, None].expand(-1, mask.shape[1], -1, mask.shape[-1])
+                    self.prefill_mask = _gather_mask_keys(mask.gather(-2, queries), self.kept)
                 kwargs['attention_mask'] = self.prefill_mask
         elif mask is not None:
-            key_indices = torch.cat((self.kept, torch.arange(self.width, mask.shape[-1], device=mask.device)))
-            kwargs['attention_mask'] = mask.index_select(-1, key_indices)
+            generated = torch.arange(self.width, mask.shape[-1], device=mask.device).expand(len(self.kept), -1)
+            kwargs['attention_mask'] = _gather_mask_keys(mask, torch.cat((self.kept, generated), dim=1))
         return args, kwargs
 
     def install(self, layers, shallow, hooks):
@@ -132,12 +155,14 @@ class _PrunePrompt:
             hooks.callback(handle.remove)
 
     def details(self):
-        return dict(picks=self.picks.tolist(), raw=self.raw.tolist(), corrected=self.corrected.tolist(),
-                    penalties=None if self.penalties is None else self.penalties.tolist())
+        penalties = [None] * len(self.picks) if self.penalties is None else self.penalties.tolist()
+        return [dict(picks=picks, raw=raw, corrected=corrected, penalties=penalty)
+                for picks, raw, corrected, penalty in
+                zip(self.picks.tolist(), self.raw.tolist(), self.corrected.tolist(), penalties)]
 
 
-class _FirstBeamStep(StoppingCriteria):
-    """Timestamp the first beam expansion without changing when generation stops."""
+class _FirstTokenStep(StoppingCriteria):
+    """Timestamp the first token selection without changing when generation stops."""
 
     def __init__(self, device):
         self.device = device
@@ -162,8 +187,12 @@ def generate(model, inputs, generation, shallow, *, method=None, curve=None, cou
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
     if method not in (None, 'raw', 'corrected', 'mmr'):
         raise ValueError(f'Unknown pruning method {method!r}')
+    if method is not None and len(inputs['input_ids']) > 1:
+        config = generation.get('generation_config', model.native.generation_config)
+        if generation.get('num_beams', config.num_beams) != 1 or generation.get('do_sample', config.do_sample):
+            raise ValueError('Batched pruning supports greedy generation')
     device = inputs['input_ids'].device
-    timer = _FirstBeamStep(device)
+    timer = _FirstTokenStep(device)
     state = None
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
@@ -181,5 +210,4 @@ def generate(model, inputs, generation, shallow, *, method=None, curve=None, cou
     else:
         elapsed = (end - start) * 1000
         first = None if timer.first is None else (timer.first - start) * 1000
-    return tokens, dict(latency_ms=elapsed, first_beam_step_ms=first,
-                        generated_tokens=tokens.shape[1]), None if state is None else state.details()
+    return tokens, dict(latency_ms=elapsed, first_token_step_ms=first), None if state is None else state.details()

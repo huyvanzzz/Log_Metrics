@@ -85,16 +85,23 @@ def _selection_rows(rows, config):
 def _summarize(rows, config):
     names = {'baseline': config['visual_count'], **{v['name']: v['keep'] for v in config['variants']}}
     quality = _quality(rows, names)
+    batches = {row.get('batch_id', i): row for i, row in enumerate(rows)}
     summary = []
     for name, count in names.items():
         samples = [row['variants'][name] for row in rows]
-        first_steps = [sample['first_beam_step_ms'] for sample in samples if sample['first_beam_step_ms'] is not None]
+        batch_results = [row['variants'][name] for row in batches.values()]
+        first_steps = [result.get('first_token_step_ms', result.get('first_beam_step_ms')) for result in batch_results]
+        first_steps = [value for value in first_steps if value is not None]
+        latencies = [result['latency_ms'] for result in batch_results]
+        total_ms = sum(latencies)
         scores = quality[name]
         record = dict(variant=name, kept_tokens=count, **scores, examples=len(samples),
+                      measured_batches=len(batch_results), mean_batch_size=len(samples) / len(batch_results),
                       mean_generated_tokens=mean(sample['generated_tokens'] for sample in samples),
-                      median_first_beam_step_ms=median(first_steps) if first_steps else None,
-                      measured_first_beam_steps=len(first_steps),
-                      median_latency_ms=median(sample['latency_ms'] for sample in samples),
+                      median_first_token_step_ms=median(first_steps) if first_steps else None,
+                      measured_first_token_steps=len(first_steps),
+                      median_latency_ms=median(latencies),
+                      inference_questions_per_gpu_second=1000 * len(samples) / total_ms if total_ms else None,
                       delta_overall=scores['overall'] - quality['baseline']['overall'],
                       answer_changed_pct=100 * mean(row['variants']['baseline']['prediction'] != sample['prediction']
                                                    for row, sample in zip(rows, samples)))
@@ -163,8 +170,8 @@ def _comparison_figure(summary, output):
     fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True, layout='constrained')
     labels = [row['variant'].replace('_', '\n') for row in summary]
     colors = {'baseline': '#555555', 'raw': '#4677a2', 'corrected': '#c36719', 'mmr': '#267862'}
-    for ax, key, title in zip(axes, ('delta_overall', 'median_first_beam_step_ms', 'median_latency_ms'),
-            ('Change in Overall', 'First beam step\nmedian (ms)', 'Generation latency\nmedian (ms)')):
+    for ax, key, title in zip(axes, ('delta_overall', 'median_first_token_step_ms', 'median_latency_ms'),
+            ('Change in Overall', 'First token step\nbatch median (ms)', 'Generation time\nbatch median (ms)')):
         baseline = summary[0][key]
         ax.bar(labels, [np.nan if row[key] is None else row[key] for row in summary],
                color=[colors[row['variant'].split('_')[0]] for row in summary])
@@ -188,6 +195,10 @@ def report(output):
     summary = _summarize(rows, config)
     _csv(output / 'comparison.csv', summary)
     fields = ('sample_id', 'question', 'ground_truth')
+    distribution = config.get('question_type_distribution')
+    if distribution:
+        _csv(output / 'question_type_distribution.csv', distribution)
+        fields += ('question_type',)
     predictions = [dict({key: row[key] for key in fields},
                         **{result['variant']: row['variants'][result['variant']]['prediction'] for result in summary})
                    for row in rows]
