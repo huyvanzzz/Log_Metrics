@@ -93,6 +93,7 @@ def test_projected_input_reuse_does_not_access_raw(tmp_path):
     from types import SimpleNamespace
     from smolvlm_attention.sample_store import digest
     from smolvlm_predictor_io.orchestration import resolve_projected
+    from smolvlm_predictor_io.projected import GROUPED_PROJECTION_POLICY
     prepared = tmp_path / 'prepared'
     prepared.mkdir()
     (prepared / 'train.jsonl').write_text('sample', encoding='utf-8')
@@ -100,6 +101,7 @@ def test_projected_input_reuse_does_not_access_raw(tmp_path):
     checkpoint.write_bytes(b'fixture')
     model = SimpleNamespace(architecture_signature={'fixture': True})
     identity = dict(checkpoint_sha256=digest(checkpoint), model=model.architecture_signature,
+                    projection_policy=GROUPED_PROJECTION_POLICY.copy(),
                     raw_cache_descriptor={'prepared_hashes': {'train.jsonl': digest(prepared / 'train.jsonl')}})
     projected = tmp_path / 'projected'
     build_cache(np.ones((1, 6, 2, 2), np.float16), {'key': 0}, projected, lambda x: x,
@@ -174,3 +176,67 @@ def test_zero_reference_cancellation_diagnostics_are_json_safe():
     report['fp64_reference']=fp64_selected_reference(model,raw,changed,reference,details)
     json.dumps(report,allow_nan=False)
     assert all(x['cancellation_ratio'] is None for x in report['fp64_reference']['elements'])
+
+def test_grouped_projection_calls_connector_once_per_six_camera_group():
+    import torch
+    from test_smolvlm_pruned_decoder import fixture
+    from smolvlm_predictor_io.projected import project_native,project_native_grouped
+    model,batch=fixture();raw=batch['visual_features'].numpy()
+    expected=np.concatenate([project_native(model,raw[i:i+1]) for i in range(len(raw))])
+    calls=[]
+    hook=model.native.model.connector.register_forward_pre_hook(lambda module,args:calls.append(args[0].shape[0]))
+    try:actual=project_native_grouped(model,raw)
+    finally:hook.remove()
+    assert calls==[6]*len(raw)
+    np.testing.assert_array_equal(actual,expected)
+
+
+def test_grouped_parity_uses_fp64_and_accepts_only_actual_grouped_path(tmp_path,monkeypatch):
+    import smolvlm_predictor_io.projected as projected
+    from test_smolvlm_pruned_decoder import fixture
+    model,batch=fixture();raw=batch['visual_features'].numpy();original=projected.project_native
+    def bulk_only_error(model,values):
+        result=original(model,values).copy()
+        if len(values)>1:result[0,0,0,0]+=.01
+        return result
+    monkeypatch.setattr(projected,'project_native',bulk_only_error)
+    report=projected.verify_grouped_parity(model,raw,report_path=tmp_path/'grouped.json')
+    assert report['ok'] and report['rtol']==1e-5 and report['atol']==1e-5
+    assert not report['bulk_diagnostic']['ok']
+    assert report['acceptance_scope']=='grouped_path_finite_and_selected_cpu_fp64'
+    def corrupt_all(model,values):
+        result=original(model,values).copy();result[0,0,0,0]+=.01;return result
+    monkeypatch.setattr(projected,'project_native',corrupt_all)
+    with pytest.raises(ValueError,match='grouped parity failed'):
+        projected.verify_grouped_parity(model,raw,report_path=tmp_path/'grouped.json')
+    assert not json.loads((tmp_path/'grouped.json').read_text())['ok']
+
+def test_grouped_parity_applies_new_absolute_tolerance_and_rejects_nonfinite(tmp_path,monkeypatch):
+    import smolvlm_predictor_io.projected as projected
+    from test_smolvlm_pruned_decoder import fixture
+    model,batch=fixture();raw=batch['visual_features'].numpy();original=projected.project_native
+    def small_error(model,values):
+        result=original(model,values).copy();result[0,0,0,0]+=5e-6;return result
+    monkeypatch.setattr(projected,'project_native',small_error)
+    result=projected.verify_grouped_parity(model,raw,report_path=tmp_path/'grouped.json')
+    assert result['ok']
+    def nan(model,values):
+        result=original(model,values).copy();result[0,0,0,0]=np.nan;return result
+    monkeypatch.setattr(projected,'project_native',nan)
+    with pytest.raises(ValueError,match='grouped parity failed'):
+        projected.verify_grouped_parity(model,raw,report_path=tmp_path/'grouped.json')
+    assert not json.loads((tmp_path/'grouped.json').read_text())['finite']
+
+
+def test_input_rejects_cache_without_new_grouped_policy(tmp_path):
+    from types import SimpleNamespace
+    from smolvlm_predictor_io.orchestration import _check_origin
+    cache=SimpleNamespace(manifest={'identity':{}})
+    with pytest.raises(ValueError,match='projection policy'):
+        _check_origin(cache,None,None,None)
+
+def test_worker_refuses_old_projection_policy_before_cuda_startup(tmp_path):
+    from smolvlm_predictor_io.orchestration import build_worker
+    path=tmp_path/'spec.json';path.write_text(json.dumps({'identity':{}}))
+    with pytest.raises(ValueError,match='projection policy'):
+        build_worker(path,0)

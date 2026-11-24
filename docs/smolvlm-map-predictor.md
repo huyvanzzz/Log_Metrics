@@ -206,3 +206,20 @@ The predictor archive excludes raw/projected caches, teacher targets and base
 weights. No precision/batch/worker sweep, production training, or automatic
 publishing is performed by local verification. CUDA peak memory and speed must
 still be checked by running the notebook's real stress tests.
+
+
+### Connector grouping and parity
+
+Projected-cache I/O remains batch 32/GPU. Each frozen FP32 connector call processes
+one six-camera group; this changes neither training batch 32 nor test batch 64.
+The cache identity records `connector_groups_per_call=1` and the new parity policy.
+A cache from a different projection policy is refused rather than overwritten.
+
+Preflight compares the actual grouped outputs with selected independent CPU FP64
+projection dots, including elements selected by bulk/singleton discrepancies and
+positions spread over the batch. The agreed thresholds are `rtol=1e-5, atol=1e-5`.
+All sampled elements must pass; all cached batches still undergo shape/finiteness
+checks. This is selected-element numerical verification, not a full FP64 proof of
+every output. Bulk-32 differences are retained as diagnostics, not a condition
+requiring the grouped path to reproduce bulk-32 rounding. Rank reports remain at
+`logs/projected_parity_rank_0.json` and `logs/projected_parity_rank_1.json`.

@@ -11,7 +11,7 @@ import uuid
 import numpy as np
 
 from smolvlm_attention.sample_store import atomic_json, digest
-from .projected import ProjectedCache, build_cache, finalize_cache, project_native, verify_native_parity
+from .projected import ProjectedCache, build_cache, finalize_cache, project_native_grouped, verify_grouped_parity, GROUPED_PROJECTION_POLICY
 
 
 def _read(path):
@@ -20,6 +20,8 @@ def _read(path):
 
 def _check_origin(cache, model, checkpoint, prepared):
     identity = cache.manifest['identity']
+    if identity.get('projection_policy') != GROUPED_PROJECTION_POLICY:
+        raise ValueError('Projected cache uses a different projection policy; choose a new cache directory')
     if identity.get('checkpoint_sha256') != digest(checkpoint) or identity.get('model') != model.architecture_signature:
         raise ValueError('Projected checkpoint/connector identity mismatch')
     for name, sha in identity['raw_cache_descriptor']['prepared_hashes'].items():
@@ -55,7 +57,8 @@ def resolve_projected(cfg, artifacts, model, output_dir, projected_input='', pro
     descriptor = _read(receipt)
     raw_dir = Path(artifacts['cache_dir']).resolve()
     identity = dict(raw_cache_manifest=_read(raw_dir / 'manifest.json'), raw_cache_descriptor=descriptor,
-                    checkpoint_sha256=digest(checkpoint), model=model.architecture_signature)
+                    checkpoint_sha256=digest(checkpoint), model=model.architecture_signature,
+                    projection_policy=GROUPED_PROJECTION_POLICY.copy())
     session = uuid.uuid4().hex
     spec = dict(identity=identity, raw_dir=str(raw_dir), checkpoint=str(Path(checkpoint).resolve()),
                 output=str(directory), gate=str(internal / session), diagnostic_report_dir=str(logs.resolve()), world_size=2, batch_size=32,
@@ -96,6 +99,8 @@ def build_worker(spec_path, rank):
     import torch
     from smolvlm_inference.model import load_model, CAMERA_ORDER
     spec = _read(spec_path)
+    if spec['identity'].get('projection_policy') != GROUPED_PROJECTION_POLICY:
+        raise ValueError('Projected builder projection policy changed; rerun validate-inputs')
     torch.cuda.set_device(rank)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -117,12 +122,12 @@ def build_worker(spec_path, rank):
     if not rows:
         raise ValueError('Projected builder empty rank shard')
     report_path = Path(spec['diagnostic_report_dir']) / f'projected_parity_rank_{rank}.json'
-    parity = verify_native_parity(model, np.asarray(raw[rows], dtype=np.float32), report_path=report_path)
+    parity = verify_grouped_parity(model, np.asarray(raw[rows], dtype=np.float32), report_path=report_path)
     gate = Path(spec['gate'])
     gate.mkdir(parents=True, exist_ok=True)
     atomic_json(gate / f'{rank}.json', parity)
     while not all((gate / f'{i}.json').exists() for i in range(spec['world_size'])):
         time.sleep(.25)
-    build_cache(raw, _read(raw_dir / 'index.json'), spec['output'], lambda batch: project_native(model, batch),
+    build_cache(raw, _read(raw_dir / 'index.json'), spec['output'], lambda batch: project_native_grouped(model, batch),
                 spec['identity'], batch_size=spec['batch_size'], rank=rank, world_size=spec['world_size'],
                 projected_shape=spec['projected_shape'], progress=lambda value: print(json.dumps(value), flush=True))

@@ -172,7 +172,7 @@ def project_native(backbone, raw_batch):
 
 
 def verify_native_parity(backbone, raw_batch, *, rtol=1e-5, atol=1e-6, report_path=None):
-    """Retain strict allclose; diagnose failures without changing acceptance.
+    """Legacy bulk/singleton diagnostic; not the grouped cache production gate.
 
     FP64 comparison is limited to selected output elements and never runs on a
     passing batch. No fallback, changed tolerance, or alternate cache data is used.
@@ -201,6 +201,64 @@ def verify_native_parity(backbone, raw_batch, *, rtol=1e-5, atol=1e-6, report_pa
             'mismatched_elements', 'mismatch_fraction', 'rtol', 'atol') if key in report}
         location = f'; diagnostic report: {report_path}' if report_path is not None else ''
         raise ValueError(f'Projected FP32 connector batching parity failed: {summary}{location}')
+    return report
+
+
+GROUPED_PROJECTION_POLICY = dict(connector_groups_per_call=1, compute_dtype='float32',
+    parity='grouped_native_selected_fp64_v1', rtol=1e-5, atol=1e-5)
+
+
+def project_native_grouped(backbone, raw_batch):
+    """One native connector call for each six-camera group, keeping I/O batching."""
+    if len(raw_batch) == 0:
+        raise ValueError('Empty projected group batch')
+    first = project_native(backbone, raw_batch[:1])
+    result = np.empty((len(raw_batch), *first.shape[1:]), dtype='<f4')
+    result[:1] = first
+    for row in range(1, len(raw_batch)):
+        result[row:row+1] = project_native(backbone, raw_batch[row:row+1])
+    return result
+
+
+def verify_grouped_parity(backbone, raw_batch, *, report_path=None):
+    """Gate the actual grouped cache path using selected independent FP64 dots.
+
+    Bulk projection only guides worst-case sampling and is logged, not cached or
+    used as the numerical reference. Selected FP64 checks are not a full-output
+    accuracy proof. Finite/shape validation still applies to every cached batch.
+    """
+    import torch
+    from .parity_diagnostics import comparison_report, fp64_selected_reference
+    rtol, atol = GROUPED_PROJECTION_POLICY['rtol'], GROUPED_PROJECTION_POLICY['atol']
+    bulk = project_native(backbone, raw_batch)
+    grouped = project_native_grouped(backbone, raw_batch)
+    diagnostic, details = comparison_report(bulk, grouped, rtol, atol)
+    weight = next(backbone.native.model.connector.parameters())
+    report = dict(ok=False, finite=diagnostic['finite'], projection_policy=GROUPED_PROJECTION_POLICY.copy(),
+        acceptance_scope='grouped_path_finite_and_selected_cpu_fp64', rtol=rtol, atol=atol,
+        bulk_diagnostic=diagnostic,
+        precision=dict(device=str(weight.device), connector_dtype=str(weight.dtype),
+            matmul_precision=torch.get_float32_matmul_precision(),
+            cuda_matmul_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
+            cudnn_allow_tf32=torch.backends.cudnn.allow_tf32))
+    if report['finite']:
+        try:
+            reference = fp64_selected_reference(backbone, raw_batch, bulk, grouped, details)
+            report['fp64_reference'] = reference
+            actual = np.asarray([e['singleton_value'] for e in reference['elements']], dtype=np.float64)
+            expected = np.asarray([e['fp64_value'] for e in reference['elements']], dtype=np.float64)
+            finite = bool(np.isfinite(actual).all() and np.isfinite(expected).all())
+            good = np.isclose(actual, expected, rtol=rtol, atol=atol)
+            report.update(ok=bool(finite and good.all()), fp64_selected_count=len(actual),
+                fp64_mismatched_elements=int((~good).sum()),
+                grouped_fp64_max_abs_error=float(np.abs(actual-expected).max()))
+        except Exception as exc:
+            report['fp64_diagnostic_error'] = f'{type(exc).__name__}: {exc}'
+    if report_path is not None:
+        atomic_json(report_path, report)
+    if not report['ok']:
+        location = f'; see {report_path}' if report_path is not None else ''
+        raise ValueError(f'Projected FP32 connector grouped parity failed{location}')
     return report
 
 
