@@ -25,7 +25,7 @@ def sources():
     root = Path(__file__).resolve().parents[1]
     packages = ('smolvlm_map_predictor_after2', 'smolvlm_map_predictor',
                 'smolvlm_inference', 'smolvlm_attention', 'smolvlm_topk_benchmark',
-                'smolvlm_topk_deferred')
+                'smolvlm_topk_deferred', 'smolvlm_predictor_io')
     return {str(p.relative_to(root)).replace('\\','/'): digest(p)
             for package in packages for p in sorted((root/package).rglob('*.py'))}
 
@@ -55,8 +55,8 @@ def resource_snapshot():
     return result
 
 
-def prepare(cfg, targets, output, *, cache_input='', prepared_dir=None, backbone_checkpoint=None, resume=False):
-    from smolvlm_attention.sample_runtime import resolve_artifacts
+def prepare(cfg, targets, output, *, cache_input='', prepared_dir=None, backbone_checkpoint=None, resume=False, projected_input='', projected_dir=''):
+    from smolvlm_predictor_io.setup import resolve_artifacts
     from smolvlm_attention.config import MODELS, PREPARED_REPO, PREPARED_REVISION, CACHE_FINGERPRINT, CACHE_DATASET
     from smolvlm_inference.model import load_model, CAMERA_ORDER
     from .data import prepare_inputs
@@ -78,21 +78,21 @@ def prepare(cfg, targets, output, *, cache_input='', prepared_dir=None, backbone
         if previous and previous.get('execution') != dict(sources=sources(), versions=versions()):
             raise ValueError('Predictor code/library versions changed; incompatible training resume')
         precision(); seed(cfg['training']['seed'])
-        # Existing public artifact resolver is reused, with no extraction/publishing path.
-        if backbone_checkpoint:
-            if not cache_input or not prepared_dir:
-                raise ValueError('A local base checkpoint also requires explicit local cache/prepared directories')
-            artifacts = dict(model=dict(checkpoint=str(Path(backbone_checkpoint).resolve())),
-                             cache_dir=str(Path(cache_input).resolve()), prepared_dir=str(Path(prepared_dir).resolve()))
-        else:
-            artifacts = resolve_artifacts(output / 'internal' / 'artifacts', cache_input, prepared_dir)
+        artifacts = resolve_artifacts(output / 'internal' / 'artifacts', cache_input, prepared_dir,
+            backbone_checkpoint, projected_input=projected_input, projected_dir=projected_dir)
         model = load_model(artifacts['model']['checkpoint'], device='cpu', expected_prompt_camera_order=CAMERA_ORDER)
         if model.geometry['text_dim'] != 576 or model.visual_token_len != 384:
             raise ValueError('Production predictor requires native SmolVLM-256M geometry')
+        from smolvlm_predictor_io.orchestration import resolve_projected
+        projected = resolve_projected(cfg, artifacts, model, output, projected_input, projected_dir)
+        from smolvlm_predictor_io.projected import ProjectedCache
+        projected_cache = ProjectedCache(projected, full=False)
         directory = output / 'internal' / f'inputs-{uuid.uuid4().hex}'
         receipt = prepare_inputs(targets, artifacts['cache_dir'], artifacts['prepared_dir'], model, directory,
             expected_counts=dict(train=341381, val=19785, test=16817),
-            expected_cache_fingerprint=spec['cache_fingerprint'], checkpoint_sha256=digest(artifacts['model']['checkpoint']))
+            expected_cache_fingerprint=spec['cache_fingerprint'], checkpoint_sha256=digest(artifacts['model']['checkpoint']), projected_cache=projected_cache)
+        from smolvlm_predictor_io.compact import prepare_store
+        receipt = prepare_store(receipt, model.processor, directory / 'compact', projected_path=projected)
         value = json.loads(receipt.read_text(encoding='utf-8'))
         if previous and (previous['identity'] != value['identity'] or recipe(previous['config']) != recipe(cfg)):
             raise ValueError('Prepared predictor identity/recipe differs from resumed run')
@@ -161,8 +161,9 @@ def launch(run_path, command, *, resume=None, predictor=None):
                 args += ['--resume', str(Path(resume).resolve())]
             process = None
             try:
-                process = subprocess.Popen(args, env=env)
-                status = process.wait()
+                with (logs / f'{command}.log').open('a', encoding='utf-8') as stream:
+                    process = subprocess.Popen(args, env=env, stdout=stream, stderr=subprocess.STDOUT)
+                    status = process.wait()
                 if status:
                     raise subprocess.CalledProcessError(status, args)
             except subprocess.CalledProcessError as exc:
@@ -180,7 +181,15 @@ def launch(run_path, command, *, resume=None, predictor=None):
                 rows = [json.loads((output / f'diagnose_rank_{rank}.json').read_text(encoding='utf-8')) for rank in (0,1)]
                 if not all(row.get('ok') for row in rows):
                     raise RuntimeError('Predictor training stress did not pass on both ranks')
-                atomic_json(output / 'diagnose.json', dict(ok=True, identity=run['identity'], recipe=recipe(run['config']), ranks=rows))
+                timing = [row.get('timing') for row in rows]
+                combined = {}
+                if all(timing):
+                    slowest = max(item['pipeline_seconds'] for item in timing)
+                    combined = dict(samples_per_second=sum(item['measured_samples'] for item in timing)/slowest,
+                        seconds_per_update=slowest/timing[0]['measured_updates'],
+                        scope='two_rank_pipeline_slowest_rank',
+                        startup_seconds_by_rank=[row['startup_seconds'] for row in rows])
+                atomic_json(output / 'diagnose.json', dict(ok=True, identity=run['identity'], recipe=recipe(run['config']), ranks=rows, throughput=combined))
         atomic_json(logs / f'{command}_resources_after.json', resource_snapshot())
 
 
@@ -195,9 +204,6 @@ def _parallel(calls):
                 readers.append(reader)
                 processes.append(subprocess.Popen(args, env=env, stdout=stream, stderr=subprocess.STDOUT))
             while True:
-                for rank, reader in enumerate(readers):
-                    for line in reader:
-                        print(f'[GPU {rank}] {line.rstrip()}', flush=True)
                 for rank, process in enumerate(processes):
                     status = process.poll()
                     if status is not None and status != 0:

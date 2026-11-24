@@ -44,9 +44,12 @@ class MapPredictor(nn.Module):
                 or visual.shape[1:] != (self.visual_tokens, self.input_dim)
                 or question.shape[2] != self.input_dim or question.shape[1] == 0
                 or question_mask.shape != question.shape[:2] or visual_positions.shape != visual.shape[:2]
-                or question_positions.shape != question.shape[:2] or not question_mask.bool().any(dim=1).all()
-                or not torch.isfinite(visual).all() or not torch.isfinite(question).all()
-                or (visual_positions < 0).any() or (question_positions < 0).any()):
+                or question_positions.shape != question.shape[:2]):
+            raise ValueError('invalid visual, question, mask, or position inputs')
+        valid = torch.stack((question_mask.bool().any(dim=1).all(),
+            torch.isfinite(visual).all(), torch.isfinite(question).all(),
+            (visual_positions >= 0).all(), (question_positions >= 0).all())).all()
+        if not bool(valid):
             raise ValueError('invalid visual, question, mask, or position inputs')
         q = self.Wq(self.question_mlp(question))
         k = self.Wk(self.visual_mlp(visual))
@@ -70,28 +73,54 @@ def topk_indices(logscores, k=32):
     return torch.argsort(logscores, dim=-1, descending=True, stable=True)[:, :k].sort(dim=-1).values
 
 
+def gather_questions(embedded, positions, batch):
+    """Gather compact CPU-prepared query columns in one device operation."""
+    device = embedded.device
+    if 'question_columns' in batch:
+        columns = batch['question_columns'].to(device=device, dtype=torch.long, non_blocking=True)
+        mask = batch.get('question_valid', batch['question_mask']).to(device=device, dtype=torch.bool, non_blocking=True)
+        if mask.shape != columns.shape:
+            raise ValueError('compact question mask shape mismatch')
+    else:
+        # Compatibility path for callers without a compact prompt store.
+        source = batch['question_mask'].to(device=device, dtype=torch.bool)
+        counts = source.sum(1)
+        width = int(counts.max())
+        candidates = torch.arange(source.shape[1], device=device).expand_as(source)
+        columns = candidates.masked_fill(~source, source.shape[1]).sort(dim=1).values[:, :width]
+        mask = torch.arange(width, device=device)[None] < counts[:, None]
+        columns = columns.masked_fill(~mask, 0)
+    if columns.ndim != 2 or columns.shape[0] != embedded.shape[0] or not mask.any(1).all():
+        raise ValueError('empty or invalid question')
+    question = embedded.gather(1, columns[..., None].expand(-1, -1, embedded.shape[-1]))
+    question_positions = positions.gather(1, columns)
+    return (question.masked_fill(~mask[..., None], 0), mask,
+            question_positions.masked_fill(~mask, 0))
+
+
+def visual_features(model, batch, device):
+    """Use the validated projected cache, retaining legacy raw-cache compatibility."""
+    if 'projected_visual_features' in batch:
+        visual = batch['projected_visual_features'].to(device=device, non_blocking=True)
+        expected = (batch['input_ids'].shape[0], model.visual_token_len, model.geometry['text_dim'])
+        if visual.shape != expected or visual.dtype != torch.float32:
+            raise ValueError('invalid projected visual features shape or dtype')
+        return visual
+    return model._project(batch['visual_features'].to(device=device, dtype=torch.float32, non_blocking=True),
+                          batch['input_ids'].shape[0]).reshape(batch['input_ids'].shape[0], -1, model.geometry['text_dim'])
+
+
 @torch.no_grad()
 def frozen_features(model, batch):
     model.eval()
     if any(p.requires_grad for p in model.parameters()):
         raise ValueError('native model must be frozen')
-    device = next(model.native.model.connector.parameters()).device
-    ids = batch['input_ids'].to(device)
-    attention = batch['attention_mask'].to(device)
-    mask = batch['question_mask'].to(device).bool()
-    positions = batch['source_position_ids'].to(device)
-    image_indices = batch['image_positions'].to(device)
-    visual = model._project(batch['visual_features'].to(device=device, dtype=torch.float32), ids.shape[0]).reshape(ids.shape[0], -1, model.geometry['text_dim'])
+    device = next(model.parameters()).device
+    ids = batch['input_ids'].to(device=device, non_blocking=True)
+    positions = batch.get('position_ids', batch.get('source_position_ids')).to(device=device, non_blocking=True)
+    image_indices = batch['image_positions'].to(device=device, non_blocking=True)
+    visual = visual_features(model, batch, device)
     embedded = model.native.get_input_embeddings()(ids)
-    counts = mask.sum(1)
-    if not (counts > 0).all():
-        raise ValueError('empty question')
-    width = int(counts.max())
-    question = embedded.new_zeros((ids.shape[0], width, embedded.shape[-1]))
-    question_positions = positions.new_zeros((ids.shape[0], width))
-    question_mask = torch.arange(width, device=device)[None, :] < counts[:, None]
-    for i in range(ids.shape[0]):
-        question[i, :counts[i]] = embedded[i, mask[i]]
-        question_positions[i, :counts[i]] = positions[i, mask[i]]
+    question, question_mask, question_positions = gather_questions(embedded, positions, batch)
     return dict(visual=visual, question=question, question_mask=question_mask,
                 visual_positions=positions.gather(1, image_indices), question_positions=question_positions)

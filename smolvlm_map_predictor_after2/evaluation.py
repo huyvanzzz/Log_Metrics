@@ -94,6 +94,20 @@ def _stress_gate(run, directory, rank, world, identity, details):
         time.sleep(.25)
 
 
+def _evaluation_dataset(receipt):
+    if read_receipt(receipt, include_targets=False).get('version') == 2:
+        from smolvlm_predictor_io.compact import CompactDataset
+        return CompactDataset(receipt, 'test')
+    return PredictorDataset(receipt, 'test')
+
+
+def _evaluation_collator(receipt, processor, maximum):
+    if read_receipt(receipt, include_targets=False).get('version') == 2:
+        from smolvlm_predictor_io.compact import CompactCollator
+        return CompactCollator(receipt, max_new_tokens=maximum)
+    return PredictorCollator(receipt, processor, max_new_tokens=maximum)
+
+
 def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbone=None):
     """Evaluate exact, nonduplicated test rows; production has one process per CUDA GPU."""
     description = read_receipt(run['receipt'], include_targets=False)
@@ -125,7 +139,7 @@ def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbon
             raise ValueError('Evaluation output belongs to another predictor/configuration')
         atomic_json(path, identity)
     with FileLock(str(directory / f'rank_{rank}.lock'), timeout=0):
-        dataset = PredictorDataset(run['receipt'], 'test')
+        dataset = _evaluation_dataset(run['receipt'])
         size = run['config']['evaluation']['batch_size']
         keep = run['config']['evaluation']['keep_tokens']
         maximum = run['config']['evaluation']['max_new_tokens']
@@ -149,8 +163,10 @@ def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbon
         if settings['num_workers']:
             options.update(prefetch_factor=settings['prefetch_factor'], multiprocessing_context='spawn')
         loader = DataLoader(dataset, batch_sampler=[stress] + [schedules[i] for i in pending],
-            collate_fn=PredictorCollator(run['receipt'], backbone.processor, max_new_tokens=maximum), **options)
+            collate_fn=_evaluation_collator(run['receipt'], backbone.processor, maximum), **options)
         progress = ProgressWriter(run['output_dir'], filename=f'evaluate_rank_{rank}.jsonl')
+        from smolvlm_predictor_io.progress import StatusWriter
+        live = StatusWriter(run['output_dir'], rank)
         adapter = PredictorGreedyDecoder(backbone, predictor, keep_tokens=keep)
         started = time.perf_counter()
         try:
@@ -165,6 +181,7 @@ def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbon
             print(json.dumps(dict(phase='evaluation_stress_passed', rank=rank, **details)), flush=True)
             processed = len(rows) - sum(len(schedules[i]) for i in pending)
             resumed = processed
+            live.update('test', processed, len(rows), force=True)
             started = time.perf_counter()
             for index, batch in zip(pending, iterator):
                 scheduled = schedules[index]
@@ -180,6 +197,7 @@ def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbon
                     rows=scheduled, sample_ids=batch['sample_ids'], records=records, records_sha256=fingerprint(records))
                 atomic_json(shard / f'batch_{index:06d}.json', commit)
                 processed += len(scheduled)
+                live.update('test', processed, len(rows))
                 elapsed = time.perf_counter() - started
                 throughput = (processed - resumed) / elapsed if elapsed else None
                 status = dict(rank=rank, processed=processed, total=len(rows), batch=index,
@@ -189,6 +207,7 @@ def evaluate_worker(run, rank, predictor_checkpoint, *, device='cuda:0', backbon
                     **memory(device))
                 progress.write('evaluation_batch', **status)
                 print(json.dumps(dict(phase='evaluation_batch', **status)), flush=True)
+            live.update('test', processed, len(rows), force=True)
             checksums = {f'batch_{i:06d}.json': digest(shard / f'batch_{i:06d}.json') for i in range(len(schedules))}
             atomic_json(shard / 'complete.json', dict(identity_sha256=fingerprint(identity), rank=rank,
                 count=len(rows), batch_checksums=checksums))
@@ -206,7 +225,7 @@ def finalize_evaluation(run, predictor_checkpoint):
     root = Path(run['output_dir']); directory = root / 'evaluation'
     if json.loads((directory / 'identity.json').read_text(encoding='utf-8')) != identity:
         raise ValueError('Evaluation finalization identity mismatch')
-    dataset = PredictorDataset(run['receipt'], 'test')
+    dataset = _evaluation_dataset(run['receipt'])
     world = int(run.get('_evaluation_world_size', 2))
     size = run['config']['evaluation']['batch_size']; keep = run['config']['evaluation']['keep_tokens']
     merged = {}

@@ -9,7 +9,7 @@
                      "precision":  "fp32",
                      "batch_size":  32,
                      "gradient_accumulation_steps":  1,
-                     "epochs":  10,
+                     "epochs":  5,
                      "world_size":  2,
                      "seed":  42,
                      "learning_rate":  0.0001,
@@ -36,7 +36,7 @@
                    "cache_dataset":  "huyhuy12334/cache-smolvlm/versions/1",
                    "cache_fingerprint":  "0632954bab4d7a8e5af5934f3476610a0547db8f3083495c1207c3da87b15585"
                },
-    "output_dir":  "/kaggle/working/smolvlm_map_predictor_after2_lastquery_index22_outputs",
+    "output_dir":  "/kaggle/working/smolvlm_map_predictor_after2_lastquery_index22_optimized_outputs",
     "method":  {
                    "prune_after_layer_index":  2,
                    "input_layer_index":  2,

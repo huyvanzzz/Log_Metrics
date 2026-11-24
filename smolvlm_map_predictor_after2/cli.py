@@ -19,6 +19,8 @@ def parser():
     prepare.add_argument('--config', default=str(Path(__file__).resolve().parents[1]/'configs/smolvlm_map_predictor_after2_lastquery_index22.json'))
     prepare.add_argument('--targets-input', required=True)
     prepare.add_argument('--cache-input', default='')
+    prepare.add_argument('--projected-cache-input', default='')
+    prepare.add_argument('--projected-cache-dir', default='')
     prepare.add_argument('--prepared-dir')
     prepare.add_argument('--base-checkpoint')
     prepare.add_argument('--output')
@@ -63,7 +65,8 @@ def main(argv=None):
         cfg = load_config(args.config)
         return runtime.prepare(cfg, args.targets_input, args.output or cfg['output_dir'],
             cache_input=args.cache_input, prepared_dir=args.prepared_dir,
-            backbone_checkpoint=args.base_checkpoint, resume=args.resume)
+            backbone_checkpoint=args.base_checkpoint, resume=args.resume,
+            projected_input=args.projected_cache_input, projected_dir=args.projected_cache_dir)
     if args.command == 'bundle':
         result = runtime.bundle(args.run)
         print(result, flush=True)

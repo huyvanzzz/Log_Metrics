@@ -16,7 +16,8 @@ queries use all question tokens. These policies intentionally differ.
 Training/validation:
 
 ```text
-FP16 vision cache --FP16 H2D--> FP32 frozen native connector --> [B,384,576]
+FP16 raw cache --> FP32 frozen connector (one-time cache build)
+projected FP32 cache --FP32 H2D-----------------------------> [B,384,576]
 question token IDs ----------> frozen native embedding -----> [B,Lq,576]
                                       |
                          trainable MAP-style predictor
@@ -40,7 +41,7 @@ question length. Targets are checked but never renormalized/clamped. This uses
 
 Frozen extraction uses `no_grad`, not `inference_mode`, so predictor parameter
 gradients remain valid. Training guards reject calls to decoder blocks, full
-native model, vision encoder and LM head. Only connector/embedding lookups run.
+native model, vision encoder and LM head. Only native embedding lookups run once the projected cache is active; the connector runs only during cache construction.
 
 After training, predictor best selects stable global Top-32 **before block 0**.
 Ties prefer smaller visual indices; chosen indices then return to source order.
@@ -77,8 +78,7 @@ Camera order is **Front, Front-Left, Front-Right, Back, Back-Left, Back-Right**.
 The reverse-camera checkpoint is rejected.
 
 Parent validates full hashes/finiteness once when preparing a run; workers use
-file receipts, lazy offsets/memmaps and batch checks. Each CPU batch preallocates
-FP16 features; only GPU features are cast to FP32 before connector computation.
+file receipts, lazy offsets/memmaps and batch checks. Each CPU batch preallocates projected FP32 features. Compact native prompt/token mappings are prepared once, and workers use lazy read-only memmaps without a tokenizer or per-sample prepared/target JSON reads.
 
 ## Training and resume
 
@@ -88,7 +88,7 @@ The separate config is `configs/smolvlm_map_predictor_index22.json`:
 |---|---|
 | Train | 2 GPUs, predictor-only DDP, batch 32/GPU, accumulation 1 |
 | Precision | FP32 compute, autocast/TF32 off, no GradScaler |
-| Duration | 10 epochs continuously |
+| Duration | 5 epochs continuously |
 | Optimizer | AdamW, LR 1e-4, weight decay .05, default betas/eps |
 | Scheduler | ExponentialLR gamma .9 after completed epoch |
 | Clip / seed | 1.0 / 42 |
@@ -127,9 +127,9 @@ python -m pip install -r smolvlm_map_predictor/requirements.txt
 python -m smolvlm_map_predictor validate-inputs \
   --targets-input /kaggle/input/YOUR-TARGETS/export \
   --cache-input /kaggle/input/YOUR-CACHE/cache \
-  --output /kaggle/working/smolvlm_map_predictor_index22_outputs
-python -m smolvlm_map_predictor diagnose --run /kaggle/working/smolvlm_map_predictor_index22_outputs/run.json
-python -m smolvlm_map_predictor train --run /kaggle/working/smolvlm_map_predictor_index22_outputs/run.json
+  --output /kaggle/working/smolvlm_map_predictor_index22_optimized_outputs
+python -m smolvlm_map_predictor diagnose --run /kaggle/working/smolvlm_map_predictor_index22_optimized_outputs/run.json
+python -m smolvlm_map_predictor train --run /kaggle/working/smolvlm_map_predictor_index22_optimized_outputs/run.json
 ```
 
 Resume: rerun `validate-inputs` with `--resume` and the same contents/recipe, run
@@ -173,3 +173,36 @@ real CPU/Gloo training/resume and complete tiny-model inference/metrics/bundle;
 Regression warnings were the three expected CPU-only pinned-memory warnings.
 Python/notebook syntax and whitespace checks passed. Existing tracked files
 were unchanged. No production extraction/training/test, commit or push ran.
+
+## Optimized pipeline
+
+Both notebooks now default to new `*_optimized_outputs` directories. Start a new run:
+old predictor checkpoints are intentionally not migrated across this pipeline identity.
+Total duration is **5 epochs**; latest/best still carry rank-specific RNG sidecars.
+
+Set `PROJECTED_CACHE_INPUT` to a complete unpacked projected cache, or leave it
+empty and keep `PROJECTED_CACHE_DIR=/kaggle/working/smolvlm_projected_visual_cache`.
+The first session builds it once from the unchanged raw FP16 cache, with two GPU
+connector workers and batch 32/GPU. It is FP32 `[4072,6,64,576]`, approximately
+3.36 GiB. A subsequent Input reuse needs no raw cache download or scan. Do not
+point PROJECTED_CACHE_INPUT at teacher targets or the original raw cache.
+There is no automatic upload; retain this cache separately for future sessions.
+
+A single persistent spawn pool per rank handles both training and validation,
+with two workers, pinning and prefetch 1. Training uses native Accelerate sampler
+classes without double sharding; validation/test remain exact nonduplicated shards.
+Projected batch 32 is 27 MiB. Finite checking uses a reusable per-image-group
+scratch buffer instead of batch-sized Torch intermediates.
+
+Notebook output is a compact progress widget. Detailed JSON, child stdout/stderr,
+diagnose results and failures stay under `logs/`, `debug/`, and `diagnose.json`.
+Diagnose is a separate disposable predictor: 3 warmup and 20 measured updates,
+with startup, batch wait, CPU collation/finite-copy, transfer, frozen computation
+and predictor-update timings. It never produces training checkpoints. GPU events
+measure intervals, not isolated kernel costs or proof of H2D overlap. Production
+training receives no extra timing synchronizations.
+
+The predictor archive excludes raw/projected caches, teacher targets and base
+weights. No precision/batch/worker sweep, production training, or automatic
+publishing is performed by local verification. CUDA peak memory and speed must
+still be checked by running the notebook's real stress tests.

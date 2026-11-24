@@ -57,8 +57,7 @@ class ProgressWriter:
             with self.path.open('a', encoding='utf-8') as stream:
                 stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False, default=str) + '\n')
                 stream.flush()
-            if self.path.name == 'train_progress.jsonl':
-                print(json.dumps(row, ensure_ascii=False, allow_nan=False, default=str), flush=True)
+
 
 
 def memory(device):
@@ -117,14 +116,17 @@ def close_loader(loader):
         close_loader(original)
 
 
-def forbid_backbone_forward(backbone):
+def forbid_backbone_forward(backbone, *, projected=False):
     """Fail immediately if the frozen prefix is accidentally replaced by full-model forward."""
     handles = []
     def forbidden(module, args):
         raise AssertionError('Decoder/vision/LM head must not run during predictor training or validation')
-    for module in [backbone.native, backbone.native.model, backbone.native.model.vision_model,
+    modules = [backbone.native, backbone.native.model, backbone.native.model.vision_model,
                    backbone.native.model.text_model, backbone.native.lm_head,
-                   *backbone.native.model.text_model.layers]:
+                   *backbone.native.model.text_model.layers]
+    if projected:
+        modules.append(backbone.native.model.connector)
+    for module in modules:
         handles.append(module.register_forward_pre_hook(forbidden))
     return handles
 
@@ -135,17 +137,24 @@ def validation(predictor, backbone, batches, accelerator, *, keep_tokens=32):
     previous = predictor.training
     predictor.eval()
     totals = torch.zeros(3, dtype=torch.float64, device=accelerator.device)
+    status = getattr(batches, 'status', None)
+    processed = 0
     try:
         for batch in batches:
             batch = move_batch(batch, accelerator.device)
             log_pred = predictor(**frozen_features(backbone, batch))
             values = kl_per_sample(log_pred, batch['log_target'])
+            processed += len(values)
+            if status:
+                status.update('validation', processed, batches.sample_count, epoch=batches.epoch + 1)
             if not bool(torch.isfinite(values).all()):
                 raise FloatingPointError('Nonfinite validation predictor KL')
             selected = topk_indices(log_pred, min(keep_tokens, log_pred.shape[-1]))
             target = topk_indices(batch['log_target'], selected.shape[-1])
             overlap = (selected[:, :, None] == target[:, None, :]).any(-1).float().mean(-1)
             totals += torch.stack((values.double().sum(), values.new_tensor(len(values)).double(), overlap.double().sum()))
+        if status:
+            status.update('validation', processed, batches.sample_count, force=True, epoch=batches.epoch + 1)
         totals = accelerator.reduce(totals, reduction='sum')
         if totals[1] <= 0:
             raise ValueError('Empty validation split')
@@ -187,8 +196,16 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
         raise AssertionError('Backbone must be frozen')
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=train_cfg['learning_rate'], weight_decay=train_cfg['weight_decay'])
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg['scheduler_gamma'])
-    batches = make_loader(receipt, backbone, cfg, 'train')
-    val_batches = make_loader(receipt, backbone, cfg, 'val', rank=accelerator.process_index, world_size=accelerator.num_processes)
+    pool = None
+    if description.get('version') == 2:
+        from smolvlm_predictor_io.loader import PersistentPool, PoolView
+        pool = PersistentPool(receipt, rank=accelerator.process_index, world_size=accelerator.num_processes,
+            batch_size=train_cfg['batch_size'], seed=train_cfg['seed'], num_workers=train_cfg['num_workers'],
+            pin_memory=train_cfg['pin_memory'], prefetch_factor=train_cfg['prefetch_factor'])
+        batches, val_batches = PoolView(pool, 'train'), PoolView(pool, 'val')
+    else:
+        batches = make_loader(receipt, backbone, cfg, 'train')
+        val_batches = make_loader(receipt, backbone, cfg, 'val', rank=accelerator.process_index, world_size=accelerator.num_processes)
     start_epoch, cursor, updates, global_step, best, best_epoch = 0, 0, 0, 0, float('inf'), None
     restored_rng = None
     if resume:
@@ -201,8 +218,11 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
         best, best_epoch = state['best_val_loss'], state['best_epoch']
         restored_rng = checkpoint.rank_rng(resume, state, accelerator.process_index)
         del payload
-    before = len(batches)
-    predictor, optimizer, batches = accelerator.prepare(predictor, optimizer, batches)
+    before = (description['counts']['train'] + train_cfg['batch_size'] - 1) // train_cfg['batch_size'] if pool else len(batches)
+    if pool:
+        predictor, optimizer = accelerator.prepare(predictor, optimizer)
+    else:
+        predictor, optimizer, batches = accelerator.prepare(predictor, optimizer, batches)
     native = accelerator.unwrap_model(predictor)
     if restored_rng is None:
         seed(train_cfg['seed'] + accelerator.process_index)
@@ -214,17 +234,23 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
             train_cfg['gradient_accumulation_steps'] * accelerator.num_processes,
         world_size=accelerator.num_processes, parameter_count=sum(p.numel() for p in native.parameters()),
         frozen_modules=['vision_model', 'connector', 'text_model', 'lm_head'], trainable_modules=['predictor'],
-        feature_input_dtype='float16', compute_dtype='float32', loss_type='teacher_to_predictor_kl',
+        feature_input_dtype='float32' if pool else 'float16', compute_dtype='float32', loss_type='teacher_to_predictor_kl',
         rng_restored=resume is not None, decoder_calls=0, tf32=False, autocast=False,
         gradient_accumulation_steps=train_cfg['gradient_accumulation_steps'], num_workers=train_cfg['num_workers'],
         prefetch_factor=train_cfg['prefetch_factor'])
-    guards = forbid_backbone_forward(backbone)
+    guards = forbid_backbone_forward(backbone, projected=pool is not None)
     A = train_cfg['gradient_accumulation_steps']
     optimizer.zero_grad(set_to_none=True)
     final_state = None
+    from smolvlm_predictor_io.progress import StatusWriter
+    live = StatusWriter(output, accelerator.process_index)
+    if pool:
+        val_batches.status = live
     try:
         for epoch in range(start_epoch, min(train_cfg['epochs'], stop_after_epoch or train_cfg['epochs'])):
             batches.set_epoch(epoch)
+            if pool:
+                val_batches.set_epoch(epoch)
             iterator = iter(batches)
             for _ in range(cursor):
                 next(iterator)
@@ -241,6 +267,7 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
             writer.write('epoch_start', stage='predictor', epoch=epoch + 1, total_epochs=train_cfg['epochs'],
                 global_step=global_step, total_steps_epoch=total, step_in_epoch=cursor, learning_rate=optimizer.param_groups[0]['lr'])
             consumed = cursor
+            live.update('train', consumed, total, force=True, epoch=epoch + 1)
             for index in range(remaining):
                 batch = move_batch(next(iterator), accelerator.device)
                 size, boundary = window_size(index, remaining, A), window_boundary(index, remaining, A)
@@ -251,6 +278,7 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
                         raise FloatingPointError('Nonfinite predictor KL')
                     accelerator.backward(loss_for_backward(raw, A, size))
                 consumed += 1; global_step += 1
+                live.update('train', consumed, total, epoch=epoch + 1)
                 # Match the source train summary: mean native microbatch loss.
                 # Validation separately weights every sample exactly once.
                 sums[0] += raw.detach().double(); sums[1] += 1
@@ -276,7 +304,15 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
                         gradients_finite=True, decoder_calls=0)
                 if max_updates is not None and updates >= max_updates and boundary:
                     break
+            live.update('train', consumed, total, force=True, epoch=epoch + 1)
             complete = consumed == total
+            if pool:
+                if complete:
+                    sentinel = object()
+                    if next(iterator, sentinel) is not sentinel:
+                        raise AssertionError('Loader yielded more batches than its schedule')
+                else:
+                    iterator.close()
             if complete:
                 scheduler.step()
             sums = accelerator.reduce(sums, reduction='sum')
@@ -317,4 +353,7 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
     finally:
         for handle in guards:
             handle.remove()
-        close_loader(batches); close_loader(val_batches)
+        if pool:
+            pool.close()
+        else:
+            close_loader(batches); close_loader(val_batches)

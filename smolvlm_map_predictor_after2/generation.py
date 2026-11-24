@@ -18,12 +18,38 @@ class PredictorGreedyDecoder(DeferredGreedyDecoder):
         compact=compact_prompt(dict(fused,inputs_embeds=prefix['hidden']),selections)
         hidden,valid,pos=compact['inputs_embeds'],compact['attention_mask'].bool(),compact['prompt_positions']
         masks=list(prefix['prefix_masks']); lengths=list(prefix['lengths'])
+        causal_mask = _mask(valid, hidden.shape[1], dtype=hidden.dtype)
+        rotary = self.text.rotary_emb(hidden, pos)
+        slots = torch.arange(hidden.shape[1], device=hidden.device)
         for layer in self.text.layers[3:]:
-            masks.append(valid.clone()); lengths.append(hidden.shape[1])
-            hidden=layer(hidden,attention_mask=_mask(valid,hidden.shape[1],dtype=hidden.dtype),
-                position_ids=pos,position_embeddings=self.text.rotary_emb(hidden,pos),past_key_value=cache,
-                use_cache=cache is not None,cache_position=torch.arange(hidden.shape[1],device=hidden.device))[0]
+            masks.append(valid); lengths.append(hidden.shape[1])
+            hidden=layer(hidden,attention_mask=causal_mask,
+                position_ids=pos,position_embeddings=rotary,past_key_value=cache,
+                use_cache=cache is not None,cache_position=slots)[0]
         return self.model.native.lm_head(self.text.norm(hidden[:,-1:]))[:,0].float(),masks,lengths
+
+    def _step(self, token, active, positions, cache, prefixes):
+        hidden = self.model.native.get_input_embeddings()(token[:, None])
+        rotary = self.text.rotary_emb(hidden, positions[:, None])
+        groups = {}
+        for i, layer in enumerate(self.text.layers):
+            past = cache.get_seq_length(i)
+            previous = prefixes[i]
+            if previous.shape[1] != past:
+                raise ValueError('layer cache length differs from its padding mask')
+            # Only reuse masks with the SAME tensor identity and physical slots,
+            # not merely equal lengths: the prefix and suffix have different keys.
+            key = (id(previous), past)
+            if key not in groups:
+                valid = torch.cat((previous, active[:, None]), 1)
+                groups[key] = (valid, _mask(valid, 1, past, hidden.dtype),
+                               torch.arange(past, past + 1, device=hidden.device))
+            valid, attention, slots = groups[key]
+            prefixes[i] = valid
+            hidden = layer(hidden, attention_mask=attention,
+                position_ids=positions[:, None], position_embeddings=rotary,
+                past_key_value=cache, use_cache=True, cache_position=slots)[0]
+        return self.model.native.lm_head(self.text.norm(hidden))[:, 0].float()
 
     @torch.inference_mode()
     def generate(self,batch,max_new_tokens=512,debug=False):

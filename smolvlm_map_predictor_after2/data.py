@@ -32,10 +32,10 @@ def adapt_receipt(common_receipt, output_path=None):
 
 
 def prepare_inputs(targets_root, cache_dir, prepared_dir, model, output_dir, *, expected_counts=None,
-                   expected_cache_fingerprint=None, checkpoint_sha256=None):
+                   expected_cache_fingerprint=None, checkpoint_sha256=None, projected_cache=None):
     common = original.prepare_inputs(targets_root, cache_dir, prepared_dir, model, output_dir,
         expected_counts=expected_counts, expected_cache_fingerprint=expected_cache_fingerprint,
-        checkpoint_sha256=checkpoint_sha256)
+        checkpoint_sha256=checkpoint_sha256, projected_cache=projected_cache)
     return adapt_receipt(common)
 
 

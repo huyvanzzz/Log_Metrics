@@ -9,12 +9,15 @@ from smolvlm_attention.sample_store import atomic_json, digest, fingerprint
 from smolvlm_attention.teacher_targets.loader import file_stat
 from smolvlm_attention.teacher_targets.runtime import validate_teacher_cache
 from smolvlm_attention.teacher_targets.storage import validate_export, validate_log_probs
-from smolvlm_inference.cache import record_key, CAMERA_ORDER
+from smolvlm_inference.cache import record_key, CAMERA_ORDER, canonical as cache_canonical
 from smolvlm_inference.pruning_text import PruningBatchCollator
 
 
 def read_receipt(path, *, include_targets=True):
     receipt = json.loads(Path(path).read_text(encoding='utf-8'))
+    if receipt.get('version') == 2:
+        from smolvlm_predictor_io.compact import read_store
+        return read_store(path, include_targets=include_targets)
     if receipt.get('version') != 1:
         raise ValueError('unsupported receipt')
     try:
@@ -28,28 +31,53 @@ def read_receipt(path, *, include_targets=True):
 
 
 def prepare_inputs(targets_root, cache_dir, prepared_dir, model, output_dir, *, expected_counts=None,
-                   expected_cache_fingerprint=None, checkpoint_sha256=None):
-    targets_root, cache_dir, prepared_dir, output = map(lambda p: Path(p).resolve(),
-        (targets_root, cache_dir, prepared_dir, output_dir))
+                   expected_cache_fingerprint=None, checkpoint_sha256=None, projected_cache=None):
+    targets_root, prepared_dir, output = map(lambda p: Path(p).resolve(),
+        (targets_root, prepared_dir, output_dir))
     output.mkdir(parents=True, exist_ok=True)
-    descriptor = json.loads(validate_teacher_cache(cache_dir, prepared_dir, output,
-                              expected_cache_fingerprint).read_text(encoding='utf-8'))
+    signature = model.architecture_signature
+    projected = None
+    if projected_cache is not None:
+        from smolvlm_predictor_io.projected import ProjectedCache
+        projected = projected_cache if isinstance(projected_cache, ProjectedCache) else ProjectedCache(projected_cache)
+        origin = projected.manifest['identity']
+        descriptor, manifest = origin['raw_cache_descriptor'], origin['raw_cache_manifest']
+        if origin.get('checkpoint_sha256') != checkpoint_sha256 or origin.get('model') != signature:
+            raise ValueError('Projected checkpoint/connector identity mismatch')
+        if expected_cache_fingerprint and manifest['fingerprint'] != expected_cache_fingerprint:
+            raise ValueError('Projected source cache fingerprint mismatch')
+        for name, sha in descriptor['prepared_hashes'].items():
+            if digest(prepared_dir/name) != sha:
+                raise ValueError('Projected prepared data identity mismatch')
+        if descriptor['prepared_hashes'] != manifest['prepared_hashes']:
+            raise ValueError('Projected source prepared hashes mismatch')
+        expected_shape = [len(projected.index), 6, model.geometry['visual_tokens_per_view'], model.geometry['text_dim']]
+        if projected.manifest['shape'] != expected_shape or manifest['fingerprint'] != hashlib.sha256(cache_canonical({k:v for k,v in manifest.items() if k != 'fingerprint'})).hexdigest():
+            raise ValueError('Projected geometry/source manifest mismatch')
+        index = projected.index
+        cache_dir = None
+    else:
+        cache_dir = Path(cache_dir).resolve()
+        descriptor = json.loads(validate_teacher_cache(cache_dir, prepared_dir, output,
+                                  expected_cache_fingerprint).read_text(encoding='utf-8'))
+        manifest = json.loads((cache_dir/'manifest.json').read_text(encoding='utf-8'))
+        index = json.loads((cache_dir/'index.json').read_text(encoding='utf-8'))
     counts = expected_counts or dict(train=341381, val=19785, test=16817)
     if descriptor['counts'] != counts:
         raise ValueError('prepared counts differ')
-    manifest = json.loads((cache_dir/'manifest.json').read_text(encoding='utf-8'))
-    signature = model.architecture_signature
     if (model.training or any(p.requires_grad for p in model.parameters()) or
             manifest['geometry'] != model.geometry or manifest['model_id'] != model.model_id or
             manifest['revision'] != model.model_revision or manifest['processor_policy'] != signature['processor'] or
             list(model.prompt_camera_order) != CAMERA_ORDER):
         raise ValueError('model/cache identity mismatch')
-    index = json.loads((cache_dir/'index.json').read_text(encoding='utf-8'))
     visual_tokens = 6 * model.geometry['visual_tokens_per_view']
     encoder = PruningBatchCollator(model.processor, image_seq_len=visual_tokens//6,
         max_length=model.native.config.text_config.max_position_embeddings, max_new_tokens=0)
-    files = [cache_dir/'manifest.json', cache_dir/'index.json', cache_dir/'features.float16.memmap',
-             prepared_dir/'manifest.json']
+    files = [prepared_dir/'manifest.json']
+    if projected is None:
+        files += [cache_dir/'manifest.json', cache_dir/'index.json', cache_dir/'features.float16.memmap']
+    else:
+        files += [projected.directory/name for name in ('manifest.json','index.json','projected.npy')]
     target_hashes, split_paths, all_target_files = {}, {}, []
     for split in ('train', 'val', 'test'):
         source = prepared_dir/f'{split}.jsonl'
@@ -137,6 +165,11 @@ def prepare_inputs(targets_root, cache_dir, prepared_dir, model, output_dir, *, 
                    cache_dir=str(cache_dir), shape=descriptor['shape'], splits=split_paths,
                    max_length=model.native.config.text_config.max_position_embeddings,
                    target_files=all_target_files, files={str(p): file_stat(p) for p in files})
+    if projected is not None:
+        receipt['projected_cache_dir'] = str(projected.directory.resolve())
+        receipt['identity']['projected_cache'] = dict(format=projected.manifest['format'],
+            fingerprint=projected.manifest['fingerprint'], payload_sha256=projected.manifest['payload_sha256'])
+        receipt['identity']['pipeline'] = 'projected_compact_single_pool_v1'
     path = output/'receipt.json'; atomic_json(path, receipt); return path
 
 
