@@ -106,6 +106,8 @@ def build_cache(raw_array, index, output, project, identity, *, batch_size=32,
                 saved = _read(receipt)
                 if saved['rows'] != selected.tolist() or saved['sha256'] != _bytes_hash(array[selected]):
                     raise ValueError('Projected committed batch checksum/schedule mismatch')
+                if progress:
+                    progress(dict(rank=rank, committed=min(start + batch_size, len(rows)), total=len(rows), reused=True))
                 continue
             raw = np.asarray(raw_array[selected], dtype=np.float32)
             if not np.isfinite(raw).all():
@@ -120,7 +122,7 @@ def build_cache(raw_array, index, output, project, identity, *, batch_size=32,
                 os.fsync(stream.fileno())
             atomic_json(receipt, dict(rows=selected.tolist(), sha256=_bytes_hash(values)))
             if progress:
-                progress(dict(rank=rank, committed=min(start + batch_size, len(rows)), total=len(rows)))
+                progress(dict(rank=rank, committed=min(start + batch_size, len(rows)), total=len(rows), reused=False))
 
 
 def finalize_cache(output):

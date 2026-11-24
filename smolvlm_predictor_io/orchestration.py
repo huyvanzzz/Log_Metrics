@@ -50,6 +50,9 @@ def resolve_projected(cfg, artifacts, model, output_dir, projected_input='', pro
     logs.mkdir(parents=True, exist_ok=True)
     internal = output / 'internal' / 'projected-builder'
     internal.mkdir(parents=True, exist_ok=True)
+    from .progress import StatusWriter
+    parent_status=StatusWriter(output,0)
+    parent_status.update('projected_cache_validation',0,1,force=True)
     # Source validator prints detailed progress; keep it entirely in files.
     with (logs / 'projected_validation.log').open('a', encoding='utf-8') as stream:
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
@@ -65,6 +68,8 @@ def resolve_projected(cfg, artifacts, model, output_dir, projected_input='', pro
                 projected_shape=[6, model.geometry['visual_tokens_per_view'], model.geometry['text_dim']])
     spec_path = internal / f'{session}.json'
     atomic_json(spec_path, spec)
+    for rank in range(2):
+        StatusWriter(output,rank).update('projected_cache_preflight',0,1,force=True)
     processes = []
     with contextlib.ExitStack() as stack:
         try:
@@ -91,7 +96,9 @@ def resolve_projected(cfg, artifacts, model, output_dir, projected_input='', pro
                 except subprocess.TimeoutExpired:
                     p.kill()
                     p.wait()
+    parent_status.update('projected_cache_finalize',0,1,force=True)
     finalize_cache(directory)
+    parent_status.update('projected_cache_finalize',1,1,force=True)
     return str(directory)
 
 
@@ -126,8 +133,12 @@ def build_worker(spec_path, rank):
     gate = Path(spec['gate'])
     gate.mkdir(parents=True, exist_ok=True)
     atomic_json(gate / f'{rank}.json', parity)
+    from .progress import ProjectionProgress,StatusWriter
+    run_output=Path(spec['diagnostic_report_dir']).parent
+    StatusWriter(run_output,rank).update('projected_cache_preflight',1,1,force=True)
     while not all((gate / f'{i}.json').exists() for i in range(spec['world_size'])):
         time.sleep(.25)
+    progress=ProjectionProgress(run_output,rank,len(range(rank,len(raw),spec['world_size'])))
     build_cache(raw, _read(raw_dir / 'index.json'), spec['output'], lambda batch: project_native_grouped(model, batch),
                 spec['identity'], batch_size=spec['batch_size'], rank=rank, world_size=spec['world_size'],
-                projected_shape=spec['projected_shape'], progress=lambda value: print(json.dumps(value), flush=True))
+                projected_shape=spec['projected_shape'], progress=progress)
