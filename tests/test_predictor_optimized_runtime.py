@@ -1,12 +1,12 @@
 from pathlib import Path
 import json
 
-def test_optimized_defaults_are_ten_epochs_and_separate_outputs():
+def test_optimized_configs_have_positive_epochs_and_separate_outputs():
     from smolvlm_map_predictor.config import load_config
     from smolvlm_map_predictor_after2.config import load_config as after
     for cfg in (load_config(),after()):
-        assert cfg['training']['epochs'] == 10
-        assert cfg['output_dir'].endswith('_optimized_10epoch_outputs')
+        assert type(cfg['training']['epochs']) is int and cfg['training']['epochs'] > 0
+        assert '_optimized_' in cfg['output_dir'] and cfg['output_dir'].endswith('_outputs')
 
 def test_progress_writes_files_without_console_json(tmp_path,capsys):
     from smolvlm_map_predictor.training import ProgressWriter
@@ -89,12 +89,26 @@ def test_progress_does_not_replay_lagging_rank_phase():
     rows[0]['epoch']=2
     assert latest_phase(rows)==[rows[0]]
 
-def test_production_epoch_validator_rejects_old_five_epoch_recipe(tmp_path):
+def test_epoch_count_configurable_for_both_predictors(tmp_path):
+    from smolvlm_map_predictor.config import load_config
+    from smolvlm_map_predictor_after2.config import load_config as after
+    for loader in (load_config, after):
+        for epochs in (1, 5, 10, 12):
+            cfg=loader(); cfg['training']['epochs']=epochs
+            path=tmp_path/'config.json'; path.write_text(json.dumps(cfg))
+            assert loader(path)['training']['epochs']==epochs
+
+
+def test_epoch_count_must_be_positive_integer(tmp_path):
     import pytest
     from smolvlm_map_predictor.config import load_config
-    cfg=load_config();cfg['training']['epochs']=5
-    path=tmp_path/'config.json';path.write_text(json.dumps(cfg))
-    with pytest.raises(ValueError,match='10 epochs'):load_config(path)
+    from smolvlm_map_predictor_after2.config import load_config as after
+    for loader in (load_config, after):
+        for epochs in (0, -1, True, 5.0, '5', None):
+            cfg=loader(); cfg['training']['epochs']=epochs
+            path=tmp_path/'config.json'; path.write_text(json.dumps(cfg))
+            with pytest.raises(ValueError): loader(path)
+
 
 def test_predictor_input_checks_use_one_scalar_read():
     import torch

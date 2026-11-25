@@ -223,3 +223,7 @@ checks. This is selected-element numerical verification, not a full FP64 proof o
 every output. Bulk-32 differences are retained as diagnostics, not a condition
 requiring the grouped path to reproduce bulk-32 rounding. Rank reports remain at
 `logs/projected_parity_rank_0.json` and `logs/projected_parity_rank_1.json`.
+
+### Configurable epoch count
+
+Set `training.epochs` to any positive integer (for example 5 or 10) before starting a new run. Training and completion logs use this value. Existing training resumes still require the original recipe; this does not migrate a 5-epoch run into a 10-epoch run.

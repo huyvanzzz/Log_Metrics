@@ -141,3 +141,7 @@ predictor runs/checkpoints are preserved and rejected as training resumes into
 this version. One persistent pool per rank is shared across train/validation,
 with 2 workers, prefetch 1 and unchanged Accelerate sample order semantics.
 Notebook progress is compact; detailed JSON and timing results are file-only.
+
+### Configurable epoch count
+
+Set `training.epochs` to any positive integer (for example 5 or 10) before starting a new run. Training and completion logs use this value. Existing training resumes still require the original recipe; this does not migrate a 5-epoch run into a 10-epoch run.

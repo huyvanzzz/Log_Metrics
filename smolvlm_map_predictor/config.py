@@ -19,8 +19,8 @@ def load_config(path=DEFAULT_CONFIG):
     for name in ('batch_size', 'gradient_accumulation_steps', 'epochs', 'num_workers', 'prefetch_factor', 'progress_log_every_steps'):
         if type(train.get(name)) is not int or train[name] < 1:
             raise ValueError(f'Invalid training {name}')
-    if any(train.get(k) != v for k,v in dict(epochs=10,batch_size=32,gradient_accumulation_steps=1,num_workers=2,prefetch_factor=1).items()):
-        raise ValueError('Production training requires 10 epochs, batch 32, accumulation 1, workers 2 and prefetch 1')
+    if any(train.get(k) != v for k,v in dict(batch_size=32,gradient_accumulation_steps=1,num_workers=2,prefetch_factor=1).items()):
+        raise ValueError('Production training requires batch 32, accumulation 1, workers 2 and prefetch 1')
     if train.get('precision') != 'fp32' or train.get('seed') != 42:
         raise ValueError('Predictor uses FP32 and seed 42')
     if train.get('world_size') != 2 or train.get('multiprocessing_context') != 'spawn':

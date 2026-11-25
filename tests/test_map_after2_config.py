@@ -8,7 +8,7 @@ def test_production_config_and_recipe():
     cfg = load_config()
     assert cfg['method'] == METHOD
     assert cfg['inputs'] == baseline()['inputs']
-    assert cfg['training'] == baseline()['training']
+    assert {k:v for k,v in cfg['training'].items() if k != 'epochs'} == {k:v for k,v in baseline()['training'].items() if k != 'epochs'}
     assert recipe(cfg)['backend'] == METHOD['id']
     assert recipe(cfg)['method'] == METHOD
 
