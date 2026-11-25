@@ -27,7 +27,7 @@ def load_config(path=DEFAULT_CONFIG):
         raise ValueError('Production input pins differ')
     if cfg['architecture'] != dict(hidden_dim=128, projection_dim=64, visual_tokens=384):
         raise ValueError('Production predictor requires hidden 128, projection 64, visual tokens 384')
-    expected = dict(precision='fp32', batch_size=32, gradient_accumulation_steps=1, epochs=5,
+    expected = dict(precision='fp32', batch_size=32, gradient_accumulation_steps=1, epochs=10,
         world_size=2, seed=42, learning_rate=1e-4, weight_decay=.05, scheduler_gamma=.9,
         max_grad_norm=1., num_workers=2, prefetch_factor=1, persistent_workers=True,
         pin_memory=True, multiprocessing_context='spawn', progress_log_every_steps=500)

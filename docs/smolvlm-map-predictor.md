@@ -88,7 +88,7 @@ The separate config is `configs/smolvlm_map_predictor_index22.json`:
 |---|---|
 | Train | 2 GPUs, predictor-only DDP, batch 32/GPU, accumulation 1 |
 | Precision | FP32 compute, autocast/TF32 off, no GradScaler |
-| Duration | 5 epochs continuously |
+| Duration | 10 epochs continuously |
 | Optimizer | AdamW, LR 1e-4, weight decay .05, default betas/eps |
 | Scheduler | ExponentialLR gamma .9 after completed epoch |
 | Clip / seed | 1.0 / 42 |
@@ -178,7 +178,7 @@ were unchanged. No production extraction/training/test, commit or push ran.
 
 Both notebooks now default to new `*_optimized_outputs` directories. Start a new run:
 old predictor checkpoints are intentionally not migrated across this pipeline identity.
-Total duration is **5 epochs**; latest/best still carry rank-specific RNG sidecars.
+Total duration is **10 epochs**; latest/best still carry rank-specific RNG sidecars.
 
 Set `PROJECTED_CACHE_INPUT` to a complete unpacked projected cache, or leave it
 empty and keep `PROJECTED_CACHE_DIR=/kaggle/working/smolvlm_projected_visual_cache`.

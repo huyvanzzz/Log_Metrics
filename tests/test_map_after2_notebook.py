@@ -19,7 +19,7 @@ def test_notebook_syntax_and_explicit_input_resume_protocol():
     assert "run('diagnose'" in text and "run('train'" in text and "run('evaluate'" in text
     assert 'RESUME_TRAINING' not in text
     assert 'smolvlm_map_predictor_after2_lastquery_index22.json' in text
-    assert 'smolvlm_map_predictor_after2_lastquery_index22_optimized_outputs' in text
+    assert 'smolvlm_map_predictor_after2_lastquery_index22_optimized_10epoch_outputs' in text
     assert 'map_predictor_after2_artifacts.zip' in text
 
 

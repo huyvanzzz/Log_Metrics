@@ -52,7 +52,7 @@ Public downloads không cần publishing credentials.
 
 Run mới để trống `RESUME_INPUT`, `RESUME_CHECKPOINT`, dùng output mặc định
 `smolvlm_map_predictor_after2_lastquery_index22_optimized_outputs`. Notebook lần lượt
-validate inputs/metrics → stress train hai GPU → train 5 epoch → stress test
+validate inputs/metrics → stress train hai GPU → train 10 epoch → stress test
 hai GPU → full test/metrics → bundle. Không tự giảm batch hoặc đổi precision.
 
 CLI tương đương:
@@ -73,7 +73,7 @@ cho một checkpoint được chọn rõ ràng.
 
 FP32 compute/H2D from the projected cache; raw FP16 is read only during one-time connector cache construction.
 Chỉ predictor vào DDP/optimizer: batch 32/GPU, accumulation 1, effective batch 64,
-5 epochs, AdamW LR `1e-4`, weight decay `0.05`, gamma `0.9` mỗi epoch hoàn tất,
+10 epochs, AdamW LR `1e-4`, weight decay `0.05`, gamma `0.9` mỗi epoch hoàn tất,
 clip 1.0, seed 42. Loader spawn, 2 workers/GPU, persistent/pin memory, prefetch 1.
 Giữ seedable shuffle/set_epoch/even batches của Accelerate, gồm bổ sung mẫu ở
 batch train cuối. Validation không duplicate, sample-mean KL; train epoch loss
@@ -115,7 +115,7 @@ two-rank CPU/Gloo, epoch resume/RNG, strict identity, greedy/reference,
 target-free test, metrics/bundle và regression các luồng cũ.
 
 Chưa chạy CUDA/checkpoint thật: chưa xác minh batch train 32/test 64 mỗi GPU,
-VRAM, RAM/shared-memory peak, tốc độ, chất lượng hoặc thời gian 5 epoch trên
+VRAM, RAM/shared-memory peak, tốc độ, chất lượng hoặc thời gian 10 epoch trên
 Kaggle. Stress thật trong notebook phải pass trước production.
 
 Kết quả xác minh local ngày 2026-11-24: 28 tests riêng của biến thể mới và
@@ -126,7 +126,7 @@ Notebook JSON/Python syntax, CLI help và whitespace checks pass; SHA-256 của
 167 file cũ được bảo vệ giữ nguyên. Không commit/push hoặc chạy production.
 
 
-## Optimized shared I/O (5 epochs)
+## Optimized shared I/O (10 epochs)
 
 The optimized notebook uses the same projected FP32 cache and compact input
 pipeline documented in [the before-LLM guide](smolvlm-map-predictor.md#optimized-pipeline).
@@ -136,7 +136,7 @@ the raw cache and teacher targets are unchanged. Connector calls are absent
 from train/validation/test after cache construction. The frozen blocks 0?2 still
 run normally; no hidden-state cache or teacher online is introduced.
 
-Total training is **5 epochs**, with a new output and pipeline identity. Old
+Total training is **10 epochs**, with a new output and pipeline identity. Old
 predictor runs/checkpoints are preserved and rejected as training resumes into
 this version. One persistent pool per rank is shared across train/validation,
 with 2 workers, prefetch 1 and unchanged Accelerate sample order semantics.
