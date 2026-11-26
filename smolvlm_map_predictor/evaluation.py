@@ -33,7 +33,7 @@ def predictor_inputs(fused, question_mask, compact_batch=None):
 
 
 @torch.inference_mode()
-def predict_batch(backbone, predictor, batch, *, keep_tokens=32, max_new_tokens=512, adapter=None):
+def predict_batch(backbone, predictor, batch, *, keep_tokens=32, max_new_tokens=512, adapter=None, selection_fn=None):
     """One connector and one predictor call, then fixed-selection native greedy decoding."""
     if predictor.training or backbone.training:
         raise ValueError('Predictor and backbone must be in eval mode')
@@ -45,8 +45,13 @@ def predict_batch(backbone, predictor, batch, *, keep_tokens=32, max_new_tokens=
         fused = fuse_inputs(backbone, batch)
     else:
         fused = fuse_batch(backbone, batch)
-    log_probs = predictor(**predictor_inputs(fused, batch['question_mask'], batch if 'question_columns' in batch else None))
-    selections = topk_indices(log_probs, keep_tokens).cpu().tolist()
+    inputs = predictor_inputs(fused, batch['question_mask'], batch if 'question_columns' in batch else None)
+    log_probs = predictor(**inputs)
+    chosen = (topk_indices(log_probs, keep_tokens) if selection_fn is None else
+              selection_fn(log_probs, inputs['visual'], keep_tokens))
+    if chosen.shape != (log_probs.shape[0], keep_tokens) or chosen.dtype != torch.long:
+        raise ValueError('Selection must return Long indices [B,keep_tokens]')
+    selections = chosen.cpu().tolist()
     compact = compact_prompt(fused, selections)
     adapter = adapter or SharedCausalLM(backbone.native)
     outputs = generate_compacted(adapter, compact, backbone.processor.tokenizer,

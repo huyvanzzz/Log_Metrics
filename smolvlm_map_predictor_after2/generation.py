@@ -8,11 +8,12 @@ from .prefix import fuse_inputs, run_prefix, predictor_inputs
 
 
 class PredictorGreedyDecoder(DeferredGreedyDecoder):
-    def __init__(self, backbone, predictor, keep_tokens=32):
+    def __init__(self, backbone, predictor, keep_tokens=32, selection_fn=None):
         super().__init__(backbone, prune_after_layer_index=2)
         if type(keep_tokens) is not int or not 0 < keep_tokens <= backbone.visual_token_len:
             raise ValueError('invalid keep_tokens')
         self.predictor,self.keep_tokens=predictor,keep_tokens
+        self.selection_fn=selection_fn
 
     def _suffix(self,fused,prefix,selections,cache):
         compact=compact_prompt(dict(fused,inputs_embeds=prefix['hidden']),selections)
@@ -71,8 +72,13 @@ class PredictorGreedyDecoder(DeferredGreedyDecoder):
             raise ValueError('generation requires an eval predictor')
         cache=None if reference else DynamicCache()
         prefix=run_prefix(self.model,fused,cache)
-        scores=self.predictor(**predictor_inputs(prefix))
-        selections=topk_indices(scores,self.keep_tokens).cpu().tolist()
+        inputs=predictor_inputs(prefix)
+        scores=self.predictor(**inputs)
+        chosen=(topk_indices(scores,self.keep_tokens) if self.selection_fn is None else
+                self.selection_fn(scores,inputs['visual'],self.keep_tokens))
+        if chosen.shape != (scores.shape[0],self.keep_tokens) or chosen.dtype != torch.long:
+            raise ValueError('Selection must return Long indices [B,keep_tokens]')
+        selections=chosen.cpu().tolist()
         logits,masks,lengths=self._suffix(fused,prefix,selections,cache)
         source=dict(fused)
         finished=torch.zeros(logits.shape[0],device=logits.device,dtype=torch.bool)
