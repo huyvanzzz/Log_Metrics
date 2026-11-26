@@ -1,4 +1,4 @@
-"""Bundle the 32-token MMR notebook and the previous evaluation cohort."""
+"""Bundle the 32- and 64-token MMR notebook and the previous evaluation cohort."""
 
 import json
 from pathlib import Path
@@ -16,7 +16,7 @@ def evaluation_protocol(results):
         raise ValueError('The previous evaluation cohort needs unique question IDs')
     return dict(evaluation_ids=ids, seed=config['seed'],
                 evaluation_fraction=config['evaluation_fraction'], generation=config['generation'],
-                shallow=config['shallow'], weight=config['weight'], camera_order=config['session']['camera_order'],
+                shallow=config['shallow'], camera_order=config['session']['camera_order'],
                 checkpoint_sha256=Path(config['session']['checkpoint']).name, feature_source=config['feature_source'])
 
 
@@ -25,23 +25,24 @@ def main():
     packed = source_bundle({'raw_mmr_protocol.json': protocol})
     cells = [
         cell('markdown', '''
-# SmolVLM MMR ablation at 32 visual tokens
+# SmolVLM MMR ablation at 32 and 64 visual tokens
 
 Choose **GPU T4 ×2**, enable Internet, and use **Save & Run All**. The notebook downloads the pinned model, test data, and camera images. It builds temporary pre-connector features with the frozen vision encoder and needs no Kaggle Inputs.
 
-Every variant selects exactly 32 of the 384 visual tokens after layer 3. Each uses raw attention from the final prompt token. The three MMR variants use λ = 0.9, with one global selection across all six cameras.
+Each method is run at two budgets, keeping 32 or 64 of the 384 visual tokens after layer 3. Both methods start from attention from the final prompt token.
 
 - **Raw top-k** retains the highest raw-attention scores.
-- **Raw MMR** measures redundancy with cosine similarity between layer-3 token states.
-- **Intra-camera MMR** takes the maximum cosine only over selected tokens from the candidate's camera. A candidate from a camera with no selected token has zero redundancy penalty.
-- **Spatial-aware MMR** multiplies cosine similarity by `0.5 + 0.5 × affinity`. Affinity is `exp(−d² / (2 × 2²))` within a camera, where `d` is Euclidean distance on the 8×8 token grid, and zero across cameras. Cross-camera pairs therefore retain half their cosine similarity.
+- **Raw-attention MMR** applies per-question min–max scaling over all visual tokens for relevance. It measures redundancy with cosine similarity between layer-3 token states. Set `MMR_ATTENTION_NORMALIZATION` to `none` for unscaled relevance and set `MMR_LAMBDA` to tune the trade-off (default 0.9).
 
-All four variants run on the same 8,408 questions from the previous experiment, using FP32 greedy decoding. Positional bias calibration is skipped. Quality and latency deltas are computed against raw top-32 from this run.
+All four configurations use the same stratified subset of 4,204 questions from the previous 8,408-question cohort. Each question type contributes exactly half of its previous count. The run uses FP32 greedy decoding and skips positional bias calibration. Quality and latency deltas are computed against raw top-k at the matching budget from this run.
 '''),
         cell('code', '''
 GPU_COUNT = 2
 GENERATION_BATCH = 4  # Per GPU, with automatic CUDA OOM backoff.
-KEEP_COUNTS = (32,)
+KEEP_COUNTS = (32, 64)
+EVALUATION_SUBSET_SIZE = 4204  # Set to None to use the full 8,408-question cohort.
+MMR_ATTENTION_NORMALIZATION = 'minmax'  # 'minmax' or 'none'; applies only to MMR relevance.
+MMR_LAMBDA = 0.9
 SELECTION_EXAMPLES = 3
 '''),
         cell('code', f'''
@@ -77,7 +78,7 @@ import transformers
 from huggingface_hub import hf_hub_download
 from smolvlm_attention.config import MODELS, PREPARED_REPO, PREPARED_REVISION
 from smolvlm_attention.posprune_ablation.image_features import IMAGE_SOURCE
-from smolvlm_attention.posprune_ablation.runtime import GENERATION, SHALLOW, WEIGHT
+from smolvlm_attention.posprune_ablation.runtime import GENERATION, SHALLOW
 from smolvlm_inference.cache import digest
 
 if (transformers.__version__, tokenizers.__version__) != ('4.46.3', '0.20.4'):
@@ -86,13 +87,13 @@ worker_count = min(GPU_COUNT, torch.cuda.device_count())
 if worker_count < 1:
     raise RuntimeError('Enable a Kaggle GPU accelerator.')
 base = MODELS['base']
-if (GENERATION != protocol['generation'] or SHALLOW != protocol['shallow'] or WEIGHT != protocol['weight']
+if (GENERATION != protocol['generation'] or SHALLOW != protocol['shallow']
         or base['camera_order'] != protocol['camera_order']
         or any(protocol['feature_source'].get(key) != value for key, value in IMAGE_SOURCE.items())
         or protocol['feature_source']['mode'] != 'regenerated'):
     raise RuntimeError('The notebook configuration differs from the historical experiment.')
 
-work = Path('/kaggle/working/smolvlm-raw-mmr-32')
+work = Path('/kaggle/working/smolvlm-raw-mmr-32-64')
 prepared = work / 'prepared_data'
 for name in ('manifest.json', 'test.jsonl'):
     hf_hub_download(repo_id=PREPARED_REPO, repo_type='dataset', revision=PREPARED_REVISION,
@@ -102,7 +103,7 @@ checkpoint = Path(hf_hub_download(repo_id=base['repo'], revision=base['revision'
 if digest(checkpoint) != protocol['checkpoint_sha256']:
     raise RuntimeError('The checkpoint SHA-256 differs from the historical experiment.')
 
-print(f'Using {worker_count} GPU(s) for all four 32-token variants.')
+print(f'Using {worker_count} GPU(s). Budgets {KEEP_COUNTS}, MMR normalization {MMR_ATTENTION_NORMALIZATION}, λ={MMR_LAMBDA}.')
 '''),
         cell('code', '''
 from smolvlm_attention.posprune_ablation.parallel import run_parallel
@@ -111,8 +112,10 @@ run_dir = Path(tempfile.mkdtemp(prefix='run-', dir=work))
 output = run_parallel(checkpoint, None, prepared, run_dir / 'results', cache_fingerprint=None,
     camera_order=base['camera_order'], gpu_count=worker_count, evaluation_size=None,
     evaluation_fraction=protocol['evaluation_fraction'], seed=protocol['seed'],
+    evaluation_subset_size=EVALUATION_SUBSET_SIZE,
     generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, selection_examples=SELECTION_EXAMPLES,
-    raw_mmr=True, camera_mmr=True, expected_evaluation_ids=protocol['evaluation_ids'])
+    raw_mmr=True, expected_evaluation_ids=protocol['evaluation_ids'],
+    attention_normalization=MMR_ATTENTION_NORMALIZATION, mmr_weight=MMR_LAMBDA)
 print((output / 'parallel_timing.json').read_text())
 '''),
         cell('code', '''
@@ -125,7 +128,7 @@ for path in report_raw_mmr(output):
         display(Image(filename=str(path)))
 with (output / 'mmr_vs_raw.csv').open() as stream:
     for row in csv.DictReader(stream):
-        print(f"{row['method']}: Overall {float(row['raw_overall']):.3f} → "
+        print(f"Keep {row['kept_tokens']} · {row['method']}: Overall {float(row['raw_overall']):.3f} → "
               f"{float(row['mmr_overall']):.3f} (Δ {float(row['delta_overall']):+.3f})")
 archive = run_dir / 'raw-mmr-results.zip'
 with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:

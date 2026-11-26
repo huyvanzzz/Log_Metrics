@@ -38,6 +38,7 @@ def _selections(rows, config):
                 entries.append(dict(sample_id=row['sample_id'], variant=variant['name'], source=variant['source'],
                     keep=variant['keep'], selection_rank=rank, visual_index=index, camera=config['cameras'][camera],
                     grid_row=y, grid_col=x, raw_score=result['raw'][index],
+                    relevance=result.get('relevance', result['raw'])[index],
                     also_selected_by_raw_topk=None if raw_picks is None else index in raw_picks,
                     max_redundancy=None if rank == 1 or result['penalties'] is None else result['penalties'][rank - 1]))
     return entries
@@ -55,7 +56,9 @@ def _differences(summary):
         deltas = {f'delta_{key}': (None if raw[key] is None or mmr[key] is None else mmr[key] - raw[key])
                   for key in ('overall', 'bleu4', 'meteor', 'rouge_l', 'cider', 'yes_no_accuracy',
                               'median_first_token_step_ms', 'median_latency_ms')}
-        output.append(dict(method=method, kept_tokens=keep, raw_source=raw['source'], raw_overall=raw['overall'],
+        output.append(dict(method=method, kept_tokens=keep, raw_source=raw['source'],
+                           attention_normalization=mmr['attention_normalization'], mmr_lambda=mmr['mmr_lambda'],
+                           raw_overall=raw['overall'],
                            mmr_overall=mmr['overall'], **deltas, answer_changed_pct=mmr['answer_changed_pct']))
     return output
 
@@ -87,7 +90,12 @@ def report_raw_mmr(output, historical=None):
         if historical is None:
             raise ValueError('Historical raw_96 predictions are required for this run')
         _add_historical(rows, historical)
-    summary = [dict(source=sources[row['variant']], **row) for row in _summarize(rows, config)]
+    summary = _summarize(rows, config)
+    for row in summary:
+        topk = row['variant'] == f"raw_{row['kept_tokens']}"
+        row.update(source=sources[row['variant']],
+                   attention_normalization='none' if topk else config.get('attention_normalization', 'none'),
+                   mmr_lambda=None if topk else config.get('weight', 0.9))
     differences = _differences(summary)
     _csv(output / 'comparison.csv', summary)
     _csv(output / 'mmr_vs_raw.csv', differences)

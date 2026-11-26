@@ -20,8 +20,9 @@ from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
 from .decoder import RAW_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
-from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, _config, _fit_curve, _generate_rows,
+from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _config, _fit_curve, _generate_rows,
                       _mean_difference, _validate_settings, select_evaluation, select_rows)
+from .selection import stratified_subset
 
 
 def _read(path):
@@ -80,7 +81,8 @@ def _worker(folder):
         sleep(.4)
     fitted = _read(release)['fitted'] if matrix is None else None
     rows = _generate_rows(session, evaluation, fitted, job['warmup'], job['keep_counts'],
-                          job['selection_examples'], job['generation_batch'], matrix=matrix)
+                          job['selection_examples'], job['generation_batch'], matrix=matrix,
+                          mmr_weight=job['mmr_weight'], attention_normalization=job['attention_normalization'])
     with (folder / 'predictions.jsonl').open('w', encoding='utf-8') as stream:
         for completed, row in enumerate(rows, 1):
             row['device'] = str(session.device)
@@ -132,7 +134,8 @@ def _wait_for_files(processes, folders, paths, stage):
 def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, camera_order,
                  gpu_count=2, calibration_size=800, evaluation_size=100, evaluation_fraction=None, calibration_batch=4,
                  generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3,
-                 raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False):
+                 raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False,
+                 mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None):
     """Shard questions across GPUs and publish one fitted curve and one paired result."""
     if gpu_count < 1 or gpu_count > torch.cuda.device_count():
         raise ValueError(f'Requested {gpu_count} GPUs, found {torch.cuda.device_count()}')
@@ -140,8 +143,14 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         raise ValueError('Calibration and generation batch sizes must be positive')
     if reuse_raw_96 and (not raw_mmr or 96 not in keep_counts or expected_evaluation_ids is None):
         raise ValueError('Reusing raw_96 requires the raw MMR experiment, budget 96, and the historical cohort')
+    if reuse_raw_96 and evaluation_subset_size is not None:
+        raise ValueError('Full-cohort historical predictions cannot be reused with an evaluation subset')
     if camera_mmr and not raw_mmr:
         raise ValueError('Camera MMR variants require the raw MMR experiment')
+    if attention_normalization not in ('none', 'minmax') or not 0 <= mmr_weight <= 1:
+        raise ValueError('Use attention normalization none or minmax and an MMR weight in [0, 1]')
+    if not raw_mmr and (attention_normalization != 'none' or mmr_weight != WEIGHT):
+        raise ValueError('MMR normalization and weight overrides require the raw MMR experiment')
     methods = RAW_METHODS if camera_mmr else RAW_METHODS[:2]
     matrix = None
     if raw_mmr:
@@ -155,6 +164,9 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
     if expected_evaluation_ids is not None and [row['sample_id'] for row in evaluation] != expected_evaluation_ids:
         raise ValueError('Evaluation questions differ from the historical comparison cohort')
+    parent_size = len(evaluation)
+    if evaluation_subset_size is not None:
+        evaluation, distribution = stratified_subset(evaluation, distribution, evaluation_subset_size, seed)
     if distribution:
         print(f'{len(evaluation):,} test questions selected by type:', flush=True)
         for group in distribution:
@@ -193,7 +205,8 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             features = dict(frames=frames, directory=temporary.name, workers=count, counts=dataset_counts)
         for rank, folder in enumerate(folders):
             _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=receipt,
-                features=features, matrix=matrix,
+                features=features, matrix=matrix, mmr_weight=mmr_weight,
+                attention_normalization=attention_normalization,
                 camera_order=camera_order, rank=rank, calibration_batch=calibration_batch,
                 generation_batch=generation_batch, keep_counts=keep_counts,
                 selection_examples=selection_examples, warmup=calibration[0] if calibration else evaluation[0],
@@ -215,8 +228,12 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         primary = stats[0]
         config = _config(primary['session'], primary['per_view'], calibration, evaluation, policy, seed,
                          calibration_batch, generation_batch, keep_counts, evaluation_fraction, distribution)
+        if evaluation_subset_size is not None:
+            config.update(evaluation_parent_questions=parent_size, evaluation_parent_fraction=evaluation_fraction,
+                          evaluation_fraction=len(evaluation) / sum(row['full_count'] for row in distribution))
         if raw_mmr:
             config.update(experiment='raw_mmr', deep=None, calibration_split=None, calibration_batch=None,
+                          weight=mmr_weight, attention_normalization=attention_normalization,
                           variants=[dict(name=f'{method}_{keep}', method=method, keep=keep,
                               source='historical' if reuse_raw_96 and method == 'raw' and keep == 96 else 'current')
                               for keep in keep_counts for method in methods])

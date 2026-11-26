@@ -11,7 +11,7 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_inference.cache import record_key, records
-from .decoder import RAW_METHODS, attention_difference, generate
+from .decoder import attention_difference, generate
 from .selection import stratified_test
 
 
@@ -93,9 +93,10 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, allow_nan=False, indent=2) + '\n', encoding='utf-8')
 
 
-def _answers(session, inputs, curve, method=None, count=None):
+def _answers(session, inputs, curve, method=None, count=None, *, mmr_weight=WEIGHT, attention_normalization='none'):
     tokens, timing, details = generate(session.model, inputs, GENERATION, SHALLOW,
-                                       method=method, curve=curve, count=count, weight=WEIGHT)
+                                       method=method, curve=curve, count=count, weight=mmr_weight,
+                                       attention_normalization=attention_normalization)
     sequences = tokens.tolist()
     predictions = session.processor.tokenizer.batch_decode(sequences, skip_special_tokens=True)
     eos = session.model.native.generation_config.eos_token_id
@@ -145,7 +146,8 @@ def _fit_curve(observed, held_out):
                 evaluation_observed=held_out.tolist())
 
 
-def _generate_batch(session, batch, curve, matrix, offset, selection_examples):
+def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *,
+                    mmr_weight=WEIGHT, attention_normalization='none'):
     inputs = _inputs(session, [row for _, row in batch])
     per_view = session.model.geometry['visual_tokens_per_view']
     camera_count = len(session.model.prompt_camera_order)
@@ -156,7 +158,8 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples):
         if 'question_type' in row:
             sample['question_type'] = row['question_type']
     for method, count in matrix[offset:] + matrix[:offset]:
-        answers, selections = _answers(session, inputs, curve, method, count)
+        answers, selections = _answers(session, inputs, curve, method, count, mmr_weight=mmr_weight,
+                                       attention_normalization=attention_normalization)
         name = 'baseline' if method is None else f'{method}_{count}'
         for (index, _), sample, result, details in zip(batch, paired, answers, selections, strict=True):
             if details is not None:
@@ -164,17 +167,17 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples):
                                                      minlength=camera_count).tolist()
                 if details['penalties'] is not None and len(details['picks']) > 1:
                     penalty = np.abs(details['penalties'][1:])
-                    scores = details['raw'] if method in RAW_METHODS else details['corrected']
-                    relevance = np.abs(np.array(scores)[details['picks'][1:]])
-                    result['mean_abs_weighted_relevance'] = float(WEIGHT * relevance.mean())
-                    result['mean_abs_weighted_similarity'] = float((1 - WEIGHT) * penalty.mean())
+                    relevance = np.abs(np.array(details['relevance'])[details['picks'][1:]])
+                    result['mean_abs_weighted_relevance'] = float(mmr_weight * relevance.mean())
+                    result['mean_abs_weighted_similarity'] = float((1 - mmr_weight) * penalty.mean())
                 if index < selection_examples:
                     result['selection'] = details
             sample['variants'][name] = result
     return paired
 
 
-def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selection_examples, batch_size, *, matrix=None):
+def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selection_examples, batch_size, *, matrix=None,
+                   mmr_weight=WEIGHT, attention_normalization='none'):
     curve = None if fitted is None else torch.as_tensor(fitted, device=session.device, dtype=torch.float32)
 
     # Warm both cases before comparing timings; rotate execution order across questions.
@@ -185,7 +188,8 @@ def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selecti
         matrix = [(None, None), *_variants(keep_counts)]
     else:
         for method, count in matrix:
-            _answers(session, warmup, curve, method, count)
+            _answers(session, warmup, curve, method, count, mmr_weight=mmr_weight,
+                     attention_normalization=attention_normalization)
     evaluation = iter(evaluation)
     pending = []
     offset = 0
@@ -195,7 +199,8 @@ def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selecti
             return
         batch = pending[:batch_size]
         try:
-            paired = _generate_batch(session, batch, curve, matrix, offset, selection_examples)
+            paired = _generate_batch(session, batch, curve, matrix, offset, selection_examples,
+                                     mmr_weight=mmr_weight, attention_normalization=attention_normalization)
         except torch.cuda.OutOfMemoryError:
             if session.device.type != 'cuda' or len(batch) == 1:
                 raise

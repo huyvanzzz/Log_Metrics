@@ -53,6 +53,13 @@ def topk(scores, count):
     return scores.argsort(descending=True, stable=True)[..., :count]
 
 
+def minmax_attention(scores):
+    """Scale each prompt's visual attention independently, with zero for a flat row."""
+    shifted = scores - scores.amin(dim=-1, keepdim=True)
+    span = shifted.amax(dim=-1, keepdim=True)
+    return shifted / span.masked_fill(span == 0, 1)
+
+
 def _camera_similarity(similarity, per_view, method):
     """Apply camera membership or camera-local spatial distance to cosine similarity."""
     count = similarity.shape[-1]
@@ -115,7 +122,8 @@ def _gather_mask_keys(mask, positions):
 
 
 class _PrunePrompt:
-    def __init__(self, inputs, image_id, visual_count, curve, count, method, weight, per_view):
+    def __init__(self, inputs, image_id, visual_count, curve, count, method, weight, per_view,
+                 attention_normalization='none'):
         ids, mask = inputs['input_ids'], inputs['attention_mask']
         self.valid = mask.bool()
         if not bool(self.valid[:, -1].all()) or bool((self.valid[:, :-1] & ~self.valid[:, 1:]).any()):
@@ -131,6 +139,7 @@ class _PrunePrompt:
         self.visual = visual.nonzero()[:, 1].view(len(ids), visual_count)
         self.curve, self.count, self.method, self.weight = curve, count, method, weight
         self.per_view = per_view
+        self.attention_normalization = attention_normalization
         self.raw = self.corrected = self.picks = self.penalties = self.kept = None
         self.prefill_mask = None
 
@@ -146,6 +155,9 @@ class _PrunePrompt:
             return
         hidden = outputs[0]
         relevance = self.raw if self.method in RAW_METHODS else self.corrected
+        if self.method in RAW_METHODS[1:] and self.attention_normalization == 'minmax':
+            relevance = minmax_attention(relevance)
+        self.relevance = relevance
         if self.method in ('raw', 'corrected'):
             self.picks = topk(relevance, self.count)
         else:
@@ -195,9 +207,9 @@ class _PrunePrompt:
     def details(self):
         penalties = [None] * len(self.picks) if self.penalties is None else self.penalties.tolist()
         corrected = [None] * len(self.picks) if self.corrected is None else self.corrected.tolist()
-        return [dict(picks=picks, raw=raw, corrected=corrected, penalties=penalty)
-                for picks, raw, corrected, penalty in
-                zip(self.picks.tolist(), self.raw.tolist(), corrected, penalties)]
+        return [dict(picks=picks, raw=raw, corrected=corrected, relevance=relevance, penalties=penalty)
+                for picks, raw, corrected, relevance, penalty in
+                zip(self.picks.tolist(), self.raw.tolist(), corrected, self.relevance.tolist(), penalties)]
 
 
 class _FirstTokenStep(StoppingCriteria):
@@ -222,10 +234,13 @@ class _FirstTokenStep(StoppingCriteria):
 
 
 @torch.inference_mode()
-def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9):
+def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9,
+             attention_normalization='none'):
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
     if method not in (None, 'corrected', 'mmr', *RAW_METHODS):
         raise ValueError(f'Unknown pruning method {method!r}')
+    if attention_normalization not in ('none', 'minmax'):
+        raise ValueError('Attention normalization must be none or minmax')
     if method is not None and len(inputs['input_ids']) > 1:
         config = generation.get('generation_config', model.native.generation_config)
         if generation.get('num_beams', config.num_beams) != 1 or generation.get('do_sample', config.do_sample):
@@ -239,7 +254,8 @@ def generate(model, inputs, generation, shallow, *, method=None, curve=None, cou
     with ExitStack() as hooks:
         if method is not None:
             state = _PrunePrompt(inputs, model.native.config.image_token_id, model.visual_token_len,
-                                 curve, count, method, weight, model.geometry['visual_tokens_per_view'])
+                                 curve, count, method, weight, model.geometry['visual_tokens_per_view'],
+                                 attention_normalization)
             state.install(model.native.model.text_model.layers, shallow, hooks)
         tokens = model.generate_from_features(**inputs, **generation, stopping_criteria=[timer])
         end = timer.mark()

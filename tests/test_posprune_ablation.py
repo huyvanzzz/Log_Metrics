@@ -45,6 +45,31 @@ def test_raw_mmr_uses_uncorrected_attention_without_a_bias_curve():
     assert details[0]['penalties'] == zero_bias[0]['penalties']
 
 
+def test_attention_minmax_scales_each_prompt_and_handles_flat_scores():
+    from smolvlm_attention.posprune_ablation.decoder import minmax_attention
+
+    scores = torch.tensor([[.005, .010, .025], [.04, .02, .06], [.2, .2, .2]])
+    expected = torch.tensor([[0., .25, 1.], [.5, 0., 1.], [0., 0., 0.]])
+    torch.testing.assert_close(minmax_attention(scores), expected)
+
+
+@pytest.mark.parametrize('method', ['raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr'])
+def test_minmax_relevance_is_used_by_raw_mmr_variants_only(method):
+    from smolvlm_attention.posprune_ablation.decoder import minmax_attention
+
+    model, batch, _, _ = padded_fixture(questions=('What?', 'What is visible? A road. A car.'))
+    inputs = {key: batch[key] for key in ('input_ids', 'attention_mask', 'visual_features')}
+    settings = dict(num_beams=1, max_new_tokens=2, min_new_tokens=2)
+    kwargs = dict(method=method, count=5, weight=.75)
+    tokens, _, details = generate(model, inputs, settings, 1, attention_normalization='minmax', **kwargs)
+    raw = torch.tensor([row['raw'] for row in details])
+    used = torch.tensor([row['relevance'] for row in details])
+    torch.testing.assert_close(used, raw if method == 'raw' else minmax_attention(raw))
+    if method == 'raw':
+        previous, _, reference = generate(model, inputs, settings, 1, **kwargs)
+        assert torch.equal(tokens, previous) and details == reference
+
+
 def test_intra_camera_mmr_selects_globally_and_applies_no_cross_camera_penalty():
     relevance = torch.tensor([1., .9, .1, .0, .8, .01, .02, .03])
     states = torch.ones((8, 2))
@@ -135,7 +160,7 @@ def test_oom_retries_all_pending_questions_with_a_smaller_batch(monkeypatch):
     monkeypatch.setattr(torch.cuda, 'device', lambda *args: nullcontext())
     monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: cleared.append(True))
 
-    def generate_batch(session, batch, curve, matrix, offset, selection_examples):
+    def generate_batch(session, batch, curve, matrix, offset, selection_examples, **kwargs):
         indices = [index for index, _ in batch]
         calls.append(indices)
         if len(indices) > 2:
@@ -241,6 +266,24 @@ def test_half_split_preserves_question_type_proportions_and_pinned_identity(tmp_
         stratified_test(test, prepared, .5, 42, labels_path=labels)
 
 
+def test_subset_halves_the_pinned_cohort_counts_without_changing_order():
+    from collections import Counter
+    from smolvlm_attention.posprune_ablation.selection import stratified_subset
+
+    counts = {'behavior': 2, 'perception': 6, 'planning': 4, 'prediction': 4}
+    labels = [name for name, count in counts.items() for _ in range(count)]
+    rows = [dict(sample_id=i, question_type=name) for i, name in enumerate(labels)]
+    distribution = [dict(question_type=name, full_count=2 * count, selected_count=count)
+                    for name, count in counts.items()]
+    selected, summary = stratified_subset(rows, distribution, 8, 42)
+    ids = [row['sample_id'] for row in selected]
+    assert ids == sorted(set(ids)) and len(ids) == 8
+    assert selected == [rows[i] for i in ids]
+    assert Counter(row['question_type'] for row in selected) == {name: n // 2 for name, n in counts.items()}
+    assert [row['parent_count'] for row in summary] == list(counts.values())
+    assert (selected, summary) == stratified_subset(rows, distribution, 8, 42)
+
+
 @pytest.mark.parametrize('mount', ['cache-smolvlm', 'datasets/huyhuy12334/cache-smolvlm', 'custom-mount'])
 def test_cache_input_resolves_already_mounted_pinned_cache(tmp_path, mount):
     from smolvlm_attention.posprune_ablation.cache_input import resolve_cache_input
@@ -278,6 +321,8 @@ def test_raw_mmr_report_compares_variants_without_mixing_historical_latency(tmp_
                 for keep in budgets for method in methods]
     config = dict(experiment='raw_mmr', variants=variants, evaluation_ids=['question'], visual_count=384,
                   cameras=CAMERA_ORDER, per_view=64, question_type_distribution=None)
+    if camera_mmr:
+        config.update(attention_normalization='minmax', weight=.75)
     (tmp_path / 'config.json').write_text(json.dumps(config), encoding='utf-8')
     selection = dict(picks=[0], raw=[.1], penalties=None)
     measured = dict(prediction='A car.', generated_tokens=3, latency_ms=10,
@@ -299,6 +344,7 @@ def test_raw_mmr_report_compares_variants_without_mixing_historical_latency(tmp_
     if camera_mmr:
         assert [r['method'] for r in deltas] == list(methods[1:])
         assert all(r['kept_tokens'] == '32' and r['delta_median_latency_ms'] == '0' for r in deltas)
+        assert all(r['attention_normalization'] == 'minmax' and r['mmr_lambda'] == '0.75' for r in deltas)
     else:
         first, second = deltas
         assert first['raw_source'] == 'historical' and first['delta_overall'] == '1.0'
@@ -384,7 +430,8 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
     output = parallel.run_parallel('checkpoint.pt', tmp_path if mounted else None, tmp_path, tmp_path / 'results',
         cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=budgets,
         raw_mmr=raw_mmr, reuse_raw_96=raw_mmr and not camera_mmr,
-        expected_evaluation_ids=list('34567'), camera_mmr=camera_mmr)
+        expected_evaluation_ids=list('34567'), camera_mmr=camera_mmr,
+        mmr_weight=.75 if camera_mmr else .9, attention_normalization='minmax' if camera_mmr else 'none')
     assert validations == (['expected'] if mounted else [])
     source = parallel._read(output / 'config.json')['feature_source']
     assert source['mode'] == ('mounted' if mounted else 'regenerated')
@@ -401,6 +448,7 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
             assert jobs[0]['matrix'] == [[name, 32] for name in
                                         ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')]
             assert parallel._read(output / 'config.json')['spatial_redundancy'] == {'alpha': .5, 'sigma_grid_cells': 2.}
+            assert all(job['mmr_weight'] == .75 and job['attention_normalization'] == 'minmax' for job in jobs)
         else:
             assert jobs[0]['matrix'] == [['raw_mmr', 96], ['raw', 32], ['raw_mmr', 32]]
     else:
