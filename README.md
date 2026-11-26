@@ -6,6 +6,10 @@ and [notebook](notebooks/kaggle_smolvlm_checkpoint_inference.ipynb).
 Two-GPU visual attention measurement: [instructions](docs/smolvlm-attention.md)
 and [standalone Kaggle notebook](notebooks/kaggle_smolvlm_attention_distribution.ipynb).
 
+Base same-layer combined visual attention, layers 0,2,...,28 (two GPUs, fixed batch 64):
+[instructions](docs/smolvlm-combined-visual-attention.md) and
+[Kaggle notebook](notebooks/kaggle_smolvlm_combined_visual_attention.ipynb).
+
 Generated-token attention on 1,000 test questions (base only):
 [instructions](docs/smolvlm-generated-attention.md) and
 [standalone Kaggle notebook](notebooks/kaggle_smolvlm_generated_attention.ipynb).
