@@ -1,58 +1,34 @@
 """Measure visual-token pair similarity and test single-token removal."""
 
 from contextlib import ExitStack
-import math
-
 import numpy as np
 import torch
 from torch.nn.functional import normalize
-from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
 
 from smolvlm_attention.collector import _prepare
-from .decoder import _PrunePrompt, _gather_rows
+from .decoder import ATTENTION_QUERY_LIMIT, _PrunePrompt, _gather_rows, incoming_visual_attention
 from .runtime import GENERATION
 
 
 LAYERS = (3, 15, 22, 26)
 DROP_LAYER = 22
-QUERY_LIMIT = 16
+QUERY_LIMIT = ATTENTION_QUERY_LIMIT
 GROUPS = ('high_hidden_high_attention', 'high_hidden_low_attention',
           'low_hidden_high_attention', 'low_hidden_low_attention')
-
-
-def _incoming(attn, kwargs, mask, queries, query_valid, visual):
-    hidden = kwargs['hidden_states']
-    size, width, _ = hidden.shape
-    q = attn.q_proj(_gather_rows(hidden, queries))
-    q = q.view(size, -1, attn.num_heads, attn.head_dim).transpose(1, 2)
-    k = attn.k_proj(hidden).view(size, width, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
-    cos, sin = (value.expand(size, -1, -1) for value in kwargs['position_embeddings'])
-    q = q * _gather_rows(cos, queries)[:, None] + rotate_half(q) * _gather_rows(sin, queries)[:, None]
-    k = k * cos[:, None] + rotate_half(k) * sin[:, None]
-    scores = q @ repeat_kv(k, attn.num_key_value_groups).transpose(-2, -1) / math.sqrt(attn.head_dim)
-    causal = torch.arange(width, device=hidden.device) <= queries[..., None]
-    scores.masked_fill_(~(causal & mask[:, None].bool())[:, None], -torch.inf)
-    probs = scores.softmax(-1)
-    columns = visual[:, None, None, :].expand(-1, attn.num_heads, queries.shape[1], -1)
-    incoming = probs.gather(-1, columns) * query_valid[:, None, :, None]
-    return incoming.flatten(1, 2).transpose(1, 2), incoming[:, :, -1, :].mean(1)
 
 
 @torch.inference_mode()
 def measure_pairs(model, inputs, layers=LAYERS, query_limit=QUERY_LIMIT):
     """Return upper-triangle cosines for both representations, in common pair order."""
     text, fused, mask, positions, last, visual = _prepare(model, inputs)
-    if max(layers) > len(text.layers) or query_limit < 1 or not bool((last > visual[:, -1]).all()):
-        raise ValueError('Requested layers and post-image text queries must exist')
-    queries = last[:, None] - torch.arange(query_limit - 1, -1, -1, device=last.device)
-    query_valid = queries > visual[:, -1:]
-    queries = torch.where(query_valid, queries, last[:, None])
+    if max(layers) > len(text.layers):
+        raise ValueError('Requested decoder layers must exist')
     first, second = torch.triu_indices(visual.shape[1], visual.shape[1], offset=1, device=last.device)
     pairs, patterns, masses = {}, {}, {}
 
     def capture_attention(attn, args, kwargs):
-        patterns[attn.layer_idx + 1], masses[attn.layer_idx + 1] = _incoming(
-            attn, kwargs, mask, queries, query_valid, visual)
+        patterns[attn.layer_idx + 1], masses[attn.layer_idx + 1] = incoming_visual_attention(
+            attn, kwargs, mask, last, visual, query_limit)
 
     def capture_states(number):
         def capture(layer, args, output):

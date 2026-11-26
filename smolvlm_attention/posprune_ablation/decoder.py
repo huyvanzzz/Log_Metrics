@@ -13,6 +13,8 @@ from smolvlm_attention.collector import _prepare
 
 
 RAW_METHODS = ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')
+RAW_MMR_METHODS = (*RAW_METHODS[1:], 'attention_mmr')
+ATTENTION_QUERY_LIMIT = 16
 SPATIAL_ALPHA = 0.5
 SPATIAL_SIGMA = 2.0
 
@@ -121,6 +123,28 @@ def _gather_mask_keys(mask, positions):
     return mask.gather(-1, positions[:, None, None, :].expand(-1, *mask.shape[1:3], -1))
 
 
+def incoming_visual_attention(attn, kwargs, valid, last, visual, query_limit=ATTENTION_QUERY_LIMIT):
+    """Return each visual token's post-image text attention pattern and final-query relevance."""
+    if query_limit < 1 or not bool((last > visual[:, -1]).all()):
+        raise ValueError('Incoming visual attention requires text after the last image token')
+    hidden = kwargs['hidden_states'][:len(valid)]
+    size, width, _ = hidden.shape
+    queries = last[:, None] - torch.arange(query_limit - 1, -1, -1, device=last.device)
+    query_valid = queries > visual[:, -1:]
+    queries = torch.where(query_valid, queries, last[:, None])
+    q = attn.q_proj(_gather_rows(hidden, queries)).view(size, -1, attn.num_heads, attn.head_dim).transpose(1, 2)
+    k = attn.k_proj(hidden).view(size, width, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+    cos, sin = (value[:size].expand(size, -1, -1) for value in kwargs['position_embeddings'])
+    q = q * _gather_rows(cos, queries)[:, None] + rotate_half(q) * _gather_rows(sin, queries)[:, None]
+    k = k * cos[:, None] + rotate_half(k) * sin[:, None]
+    scores = q @ repeat_kv(k, attn.num_key_value_groups).transpose(-2, -1) / math.sqrt(attn.head_dim)
+    causal = torch.arange(width, device=hidden.device) <= queries[..., None]
+    scores.masked_fill_(~(causal & valid[:, None].bool())[:, None], -torch.inf)
+    columns = visual[:, None, None, :].expand(-1, attn.num_heads, query_limit, -1)
+    incoming = scores.softmax(-1).gather(-1, columns) * query_valid[:, None, :, None]
+    return incoming.flatten(1, 2).transpose(1, 2), incoming[:, :, -1, :].mean(1)
+
+
 class _PrunePrompt:
     def __init__(self, inputs, image_id, visual_count, curve, count, method, weight, per_view,
                  attention_normalization='none'):
@@ -146,7 +170,10 @@ class _PrunePrompt:
     def capture(self, attn, args, kwargs):
         if self.raw is None:
             # If beam search is used, every beam starts from the same prompt.
-            self.raw = _visual_attention(attn, kwargs, self.valid, self.last, self.visual)
+            if self.method == 'attention_mmr':
+                self.patterns, self.raw = incoming_visual_attention(attn, kwargs, self.valid, self.last, self.visual)
+            else:
+                self.raw = _visual_attention(attn, kwargs, self.valid, self.last, self.visual)
             if self.curve is not None:
                 self.corrected = self.raw - self.curve
 
@@ -154,15 +181,16 @@ class _PrunePrompt:
         if self.kept is not None:
             return
         hidden = outputs[0]
-        relevance = self.raw if self.method in RAW_METHODS else self.corrected
-        if self.method in RAW_METHODS[1:] and self.attention_normalization == 'minmax':
+        relevance = self.corrected if self.method in ('corrected', 'mmr') else self.raw
+        if self.method in RAW_MMR_METHODS and self.attention_normalization == 'minmax':
             relevance = minmax_attention(relevance)
         self.relevance = relevance
         if self.method in ('raw', 'corrected'):
             self.picks = topk(relevance, self.count)
         else:
-            states = _gather_rows(hidden[:len(self.visual)], self.visual)
-            self.picks, self.penalties = mmr(relevance, states, self.count, self.weight,
+            features = (self.patterns if self.method == 'attention_mmr'
+                        else _gather_rows(hidden[:len(self.visual)], self.visual))
+            self.picks, self.penalties = mmr(relevance, features, self.count, self.weight,
                                             method=self.method, per_view=self.per_view)
         keep = torch.ones_like(self.valid)
         keep.scatter_(1, self.visual, False)
@@ -237,7 +265,7 @@ class _FirstTokenStep(StoppingCriteria):
 def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9,
              attention_normalization='none'):
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
-    if method not in (None, 'corrected', 'mmr', *RAW_METHODS):
+    if method not in (None, 'corrected', 'mmr', 'raw', *RAW_MMR_METHODS):
         raise ValueError(f'Unknown pruning method {method!r}')
     if attention_normalization not in ('none', 'minmax'):
         raise ValueError('Attention normalization must be none or minmax')

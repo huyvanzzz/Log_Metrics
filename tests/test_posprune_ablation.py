@@ -45,6 +45,66 @@ def test_raw_mmr_uses_uncorrected_attention_without_a_bias_curve():
     assert details[0]['penalties'] == zero_bias[0]['penalties']
 
 
+def test_attention_mmr_uses_attention_patterns_and_preserves_final_query_relevance(monkeypatch):
+    from smolvlm_attention.posprune_ablation import decoder
+
+    model, batch, _, _ = padded_fixture(questions=('What?', 'What is visible? A road. A car.'))
+    inputs = {key: batch[key] for key in ('input_ids', 'attention_mask', 'visual_features')}
+    settings = dict(num_beams=1, max_new_tokens=2, min_new_tokens=2)
+    native_mmr = decoder.mmr
+    widths = []
+
+    def spy(relevance, features, count, weight, **kwargs):
+        widths.append(features.shape[-1])
+        return native_mmr(relevance, features, count, weight, **kwargs)
+
+    monkeypatch.setattr(decoder, 'mmr', spy)
+    _, _, raw = generate(model, inputs, settings, 1, method='raw_mmr', count=5, attention_normalization='minmax')
+    _, _, incoming = generate(model, inputs, settings, 1, method='attention_mmr', count=5, attention_normalization='minmax')
+    text = model.native.model.text_model
+    assert widths == [text.config.hidden_size, text.layers[0].self_attn.num_heads * decoder.ATTENTION_QUERY_LIMIT]
+    for a, b in zip(raw, incoming, strict=True):
+        np.testing.assert_allclose(a['raw'], b['raw'], atol=1e-8)
+        assert a['picks'][0] == b['picks'][0] and len(set(b['picks'])) == 5
+
+
+def test_lambda_sweep_dispatches_and_reports_all_methods_at_their_own_weights(tmp_path, monkeypatch):
+    from smolvlm_attention.posprune_ablation import report, raw_mmr_report, runtime
+
+    variants = runtime.mmr_sweep_variants((32,), (.5, .7, .9))
+    assert len(variants) == len({row['name'] for row in variants}) == 13
+    assert variants[0]['name'] == 'raw_32' and variants[0]['mmr_lambda'] is None
+    assert {row['method'] for row in variants[1:]} == {
+        'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr', 'attention_mmr'}
+    session = SimpleNamespace(model=SimpleNamespace(geometry={'visual_tokens_per_view': 64}, prompt_camera_order=CAMERA_ORDER))
+    monkeypatch.setattr(runtime, '_inputs', lambda *_: {})
+    dispatched = []
+
+    def answer(session, inputs, curve, method, count, *, mmr_weight, attention_normalization):
+        dispatched.append((method, count, mmr_weight, attention_normalization))
+        scores = dict(picks=[0, 1], raw=[.01, .05], relevance=[0., 1.], penalties=None if method == 'raw' else [0., .3])
+        return [dict(prediction='A car.', generated_tokens=3, latency_ms=10, first_token_step_ms=4)], [scores]
+
+    monkeypatch.setattr(runtime, '_answers', answer)
+    sample = dict(sample_id='question', question='What?', answer='A car.')
+    rows = runtime._generate_batch(session, [(0, sample)], None, variants, 0, 1, attention_normalization='minmax')
+    for (method, keep, weight, scale), variant in zip(dispatched, variants, strict=True):
+        assert (method, keep, scale) == (variant['method'], 32, 'minmax')
+        if method != 'raw':
+            assert weight == variant['mmr_lambda']
+    config = dict(experiment='raw_mmr', variants=variants, evaluation_ids=['question'], visual_count=384,
+        cameras=CAMERA_ORDER, per_view=64, question_type_distribution=None, mmr_lambdas=[.5, .7, .9])
+    (tmp_path / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    (tmp_path / 'predictions.jsonl').write_text(json.dumps(rows[0]) + '\n', encoding='utf-8')
+    metrics = dict.fromkeys(('overall', 'bleu4', 'meteor', 'rouge_l', 'cider', 'yes_no_accuracy'), 1.)
+    monkeypatch.setattr(report, '_quality', lambda rows, names: {name: metrics.copy() for name in names})
+    assert len(raw_mmr_report.report_raw_mmr(tmp_path)) == 2
+    with (tmp_path / 'mmr_vs_raw.csv').open() as stream:
+        comparisons = list(csv.DictReader(stream))
+    assert [(row['method'], float(row['mmr_lambda'])) for row in comparisons] == [
+        (variant['method'], variant['mmr_lambda']) for variant in variants[1:]]
+
+
 def test_attention_minmax_scales_each_prompt_and_handles_flat_scores():
     from smolvlm_attention.posprune_ablation.decoder import minmax_attention
 

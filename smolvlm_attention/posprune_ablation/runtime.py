@@ -11,7 +11,7 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_inference.cache import record_key, records
-from .decoder import attention_difference, generate
+from .decoder import RAW_MMR_METHODS, attention_difference, generate
 from .selection import stratified_test
 
 
@@ -112,6 +112,25 @@ def _variants(keep_counts):
     return [(method, count) for count in keep_counts for method in ('raw', 'corrected', 'mmr')]
 
 
+def mmr_sweep_variants(keep_counts, weights):
+    """Build one raw top-k reference and all MMR/lambda combinations per budget."""
+    variants = []
+    for keep in keep_counts:
+        variants.append(dict(name=f'raw_{keep}', method='raw', keep=keep, mmr_lambda=None, source='current'))
+        for method in RAW_MMR_METHODS:
+            for weight in weights:
+                variants.append(dict(name=f'{method}_{keep}_lambda_{weight}', method=method, keep=keep,
+                                     mmr_lambda=weight, source='current'))
+    return variants
+
+
+def _generation_variants(matrix, weight):
+    if matrix and isinstance(matrix[0], dict):
+        return matrix
+    return [dict(name='baseline' if method is None else f'{method}_{keep}', method=method,
+                 keep=keep, mmr_lambda=weight) for method, keep in matrix]
+
+
 def _validate_settings(visual_count, layers, calibration_batch, generation_batch, keep_counts, selection_examples,
                        *, required_layer=None):
     required_layer = DEEP if required_layer is None else required_layer
@@ -157,10 +176,11 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *
     for (_, row), sample in zip(batch, paired, strict=True):
         if 'question_type' in row:
             sample['question_type'] = row['question_type']
-    for method, count in matrix[offset:] + matrix[:offset]:
-        answers, selections = _answers(session, inputs, curve, method, count, mmr_weight=mmr_weight,
+    for variant in matrix[offset:] + matrix[:offset]:
+        method, count = variant['method'], variant['keep']
+        weight = variant['mmr_lambda'] if variant['mmr_lambda'] is not None else mmr_weight
+        answers, selections = _answers(session, inputs, curve, method, count, mmr_weight=weight,
                                        attention_normalization=attention_normalization)
-        name = 'baseline' if method is None else f'{method}_{count}'
         for (index, _), sample, result, details in zip(batch, paired, answers, selections, strict=True):
             if details is not None:
                 result['camera_counts'] = np.bincount(np.array(details['picks']) // per_view,
@@ -168,11 +188,11 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *
                 if details['penalties'] is not None and len(details['picks']) > 1:
                     penalty = np.abs(details['penalties'][1:])
                     relevance = np.abs(np.array(details['relevance'])[details['picks'][1:]])
-                    result['mean_abs_weighted_relevance'] = float(mmr_weight * relevance.mean())
-                    result['mean_abs_weighted_similarity'] = float((1 - mmr_weight) * penalty.mean())
+                    result['mean_abs_weighted_relevance'] = float(weight * relevance.mean())
+                    result['mean_abs_weighted_similarity'] = float((1 - weight) * penalty.mean())
                 if index < selection_examples:
                     result['selection'] = details
-            sample['variants'][name] = result
+            sample['variants'][variant['name']] = result
     return paired
 
 
@@ -185,10 +205,12 @@ def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selecti
     if matrix is None:
         _answers(session, warmup, curve)
         _answers(session, warmup, curve, 'mmr', min(keep_counts))
-        matrix = [(None, None), *_variants(keep_counts)]
+        matrix = _generation_variants([(None, None), *_variants(keep_counts)], mmr_weight)
     else:
-        for method, count in matrix:
-            _answers(session, warmup, curve, method, count, mmr_weight=mmr_weight,
+        matrix = _generation_variants(matrix, mmr_weight)
+        for variant in matrix:
+            weight = variant['mmr_lambda'] if variant['mmr_lambda'] is not None else mmr_weight
+            _answers(session, warmup, curve, variant['method'], variant['keep'], mmr_weight=weight,
                      attention_normalization=attention_normalization)
     evaluation = iter(evaluation)
     pending = []

@@ -18,10 +18,10 @@ from smolvlm_inference.cache import CAMERA_ORDER
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
-from .decoder import RAW_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
+from .decoder import ATTENTION_QUERY_LIMIT, RAW_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
 from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _config, _fit_curve, _generate_rows,
-                      _mean_difference, _validate_settings, select_evaluation, select_rows)
+                      _mean_difference, _validate_settings, mmr_sweep_variants, select_evaluation, select_rows)
 from .selection import stratified_subset
 
 
@@ -135,7 +135,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                  gpu_count=2, calibration_size=800, evaluation_size=100, evaluation_fraction=None, calibration_batch=4,
                  generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3,
                  raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False,
-                 mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None):
+                 mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None, mmr_sweep=None):
     """Shard questions across GPUs and publish one fitted curve and one paired result."""
     if gpu_count < 1 or gpu_count > torch.cuda.device_count():
         raise ValueError(f'Requested {gpu_count} GPUs, found {torch.cuda.device_count()}')
@@ -147,6 +147,11 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         raise ValueError('Full-cohort historical predictions cannot be reused with an evaluation subset')
     if camera_mmr and not raw_mmr:
         raise ValueError('Camera MMR variants require the raw MMR experiment')
+    if mmr_sweep is not None:
+        if not raw_mmr or reuse_raw_96 or not mmr_sweep or len(set(mmr_sweep)) != len(mmr_sweep):
+            raise ValueError('The MMR sweep requires a raw MMR run, unique weights, and a current top-k reference')
+        if any(not 0 <= weight <= 1 for weight in mmr_sweep):
+            raise ValueError('All sweep weights must be in [0, 1]')
     if attention_normalization not in ('none', 'minmax') or not 0 <= mmr_weight <= 1:
         raise ValueError('Use attention normalization none or minmax and an MMR weight in [0, 1]')
     if not raw_mmr and (attention_normalization != 'none' or mmr_weight != WEIGHT):
@@ -157,8 +162,9 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         calibration, policy = [], None
         evaluation, distribution = select_evaluation(
             Path(prepared), evaluation_size, seed, evaluation_fraction=evaluation_fraction)
-        matrix = [(method, keep) for keep in keep_counts for method in methods
-                  if not (reuse_raw_96 and method == 'raw' and keep == 96)]
+        matrix = (mmr_sweep_variants(keep_counts, mmr_sweep) if mmr_sweep is not None
+                  else [(method, keep) for keep in keep_counts for method in methods
+                        if not (reuse_raw_96 and method == 'raw' and keep == 96)])
     else:
         calibration, evaluation, policy, distribution = select_rows(
             Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
@@ -237,7 +243,11 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                           variants=[dict(name=f'{method}_{keep}', method=method, keep=keep,
                               source='historical' if reuse_raw_96 and method == 'raw' and keep == 96 else 'current')
                               for keep in keep_counts for method in methods])
-        if camera_mmr:
+        if mmr_sweep is not None:
+            config.update(variants=matrix, weight=None, mmr_lambdas=list(mmr_sweep),
+                          attention_redundancy=dict(query_window=ATTENTION_QUERY_LIMIT,
+                                                    representation='incoming_attention_by_text_query_and_head'))
+        if camera_mmr or mmr_sweep is not None:
             config['spatial_redundancy'] = dict(alpha=SPATIAL_ALPHA, sigma_grid_cells=SPATIAL_SIGMA)
         config['feature_source'] = (dict(mode='regenerated', unique_frames=len(frames), **IMAGE_SOURCE)
                                     if frames is not None else dict(mode='mounted', fingerprint=cache_fingerprint))
