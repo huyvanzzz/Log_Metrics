@@ -83,27 +83,30 @@ def _selection_rows(rows, config):
 
 
 def _summarize(rows, config):
-    names = {'baseline': config['visual_count'], **{v['name']: v['keep'] for v in config['variants']}}
+    raw_mmr = config.get('experiment') == 'raw_mmr'
+    names = {} if raw_mmr else {'baseline': config['visual_count']}
+    names.update({v['name']: v['keep'] for v in config['variants']})
     quality = _quality(rows, names)
     batches = {row.get('batch_id', i): row for i, row in enumerate(rows)}
     summary = []
     for name, count in names.items():
+        reference = f'raw_{count}' if raw_mmr else 'baseline'
         samples = [row['variants'][name] for row in rows]
         batch_results = [row['variants'][name] for row in batches.values()]
         first_steps = [result.get('first_token_step_ms', result.get('first_beam_step_ms')) for result in batch_results]
         first_steps = [value for value in first_steps if value is not None]
-        latencies = [result['latency_ms'] for result in batch_results]
+        latencies = [result['latency_ms'] for result in batch_results if result.get('latency_ms') is not None]
         total_ms = sum(latencies)
         scores = quality[name]
         record = dict(variant=name, kept_tokens=count, **scores, examples=len(samples),
-                      measured_batches=len(batch_results), mean_batch_size=len(samples) / len(batch_results),
+                      measured_batches=len(latencies), mean_batch_size=len(samples) / len(latencies) if latencies else None,
                       mean_generated_tokens=mean(sample['generated_tokens'] for sample in samples),
                       median_first_token_step_ms=median(first_steps) if first_steps else None,
                       measured_first_token_steps=len(first_steps),
-                      median_latency_ms=median(latencies),
+                      median_latency_ms=median(latencies) if latencies else None,
                       inference_questions_per_gpu_second=1000 * len(samples) / total_ms if total_ms else None,
-                      delta_overall=scores['overall'] - quality['baseline']['overall'],
-                      answer_changed_pct=100 * mean(row['variants']['baseline']['prediction'] != sample['prediction']
+                      delta_overall=scores['overall'] - quality[reference]['overall'],
+                      answer_changed_pct=100 * mean(row['variants'][reference]['prediction'] != sample['prediction']
                                                    for row, sample in zip(rows, samples)))
         for key in ('mean_abs_weighted_relevance', 'mean_abs_weighted_similarity'):
             values = [sample[key] for sample in samples if key in sample]

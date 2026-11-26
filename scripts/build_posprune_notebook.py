@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def source_bundle():
+def source_bundle(extra_files=None):
     files = list((ROOT / 'smolvlm_inference').glob('*.py'))
     attention = ROOT / 'smolvlm_attention'
     files += [attention / name for name in ('__init__.py', 'collector.py', 'config.py', 'data.py', 'plotting.py')]
@@ -22,6 +22,9 @@ def source_bundle():
         for path in sorted(files):
             info = zipfile.ZipInfo(path.relative_to(ROOT).as_posix(), (2026, 1, 1, 0, 0, 0))
             archive.writestr(info, path.read_bytes().replace(b'\r\n', b'\n'), compress_type=zipfile.ZIP_DEFLATED)
+        for name, payload in (extra_files or {}).items():
+            info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+            archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED)
     return b64encode(buffer.getvalue()).decode('ascii')
 
 

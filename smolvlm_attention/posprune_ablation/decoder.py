@@ -12,6 +12,11 @@ from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
 from smolvlm_attention.collector import _prepare
 
 
+RAW_METHODS = ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')
+SPATIAL_ALPHA = 0.5
+SPATIAL_SIGMA = 2.0
+
+
 def _visual_attention(attn, kwargs, valid, last, visual):
     hidden = kwargs['hidden_states'][:len(valid)]
     batch, length, _ = hidden.shape
@@ -48,25 +53,52 @@ def topk(scores, count):
     return scores.argsort(descending=True, stable=True)[..., :count]
 
 
-def mmr(relevance, states, count, weight):
+def _camera_similarity(similarity, per_view, method):
+    """Apply camera membership or camera-local spatial distance to cosine similarity."""
+    count = similarity.shape[-1]
+    if type(per_view) is not int or per_view < 1 or count % per_view:
+        raise ValueError('Visual tokens must contain complete camera grids')
+    index = torch.arange(count, device=similarity.device)
+    camera = index // per_view
+    same_camera = camera[:, None] == camera[None, :]
+    if method == 'intra_camera_mmr':
+        return similarity.masked_fill(~same_camera, -torch.inf)
+
+    side = math.isqrt(per_view)
+    if side * side != per_view:
+        raise ValueError('Spatial-aware MMR requires square camera grids')
+    local = index % per_view
+    rows, columns = local // side, local % side
+    distance_sq = (rows[:, None] - rows[None, :]).square() + (columns[:, None] - columns[None, :]).square()
+    affinity = torch.exp(distance_sq.to(similarity.dtype) / (-2 * SPATIAL_SIGMA ** 2))
+    affinity = affinity.masked_fill(~same_camera, 0)
+    return similarity * ((1 - SPATIAL_ALPHA) + SPATIAL_ALPHA * affinity)
+
+
+def mmr(relevance, states, count, weight, *, method=None, per_view=None):
     """Select by relevance and maximum cosine similarity to earlier picks."""
     single = relevance.ndim == 1
     if single:
         relevance, states = relevance[None], states[None]
     unit = normalize(states, dim=-1)
     similarity = unit @ unit.transpose(1, 2)
+    if method in ('intra_camera_mmr', 'spatial_aware_mmr'):
+        similarity = _camera_similarity(similarity, per_view, method)
     selected = torch.zeros_like(relevance, dtype=torch.bool)
     redundancy = torch.full_like(relevance, -torch.inf)
+    penalty = torch.zeros_like(relevance)
     scores = relevance
     picks, penalties = [], []
-    for step in range(count):
+    for _ in range(count):
         pick = scores.masked_fill(selected, -torch.inf).argmax(dim=1, keepdim=True)
         picks.append(pick)
-        penalties.append(redundancy.gather(1, pick) if step else relevance.new_zeros(pick.shape))
+        penalties.append(penalty.gather(1, pick))
         selected.scatter_(1, pick, True)
         candidate = similarity.gather(1, pick[..., None].expand(-1, -1, relevance.shape[1])).squeeze(1)
         redundancy = torch.maximum(redundancy, candidate)
-        scores = weight * relevance - (1 - weight) * redundancy
+        # A camera with no selected token receives no intra-camera penalty.
+        penalty = redundancy.masked_fill(redundancy == -torch.inf, 0) if method == 'intra_camera_mmr' else redundancy
+        scores = weight * relevance - (1 - weight) * penalty
     indices, penalties = torch.cat(picks, dim=1), torch.cat(penalties, dim=1)
     return (indices[0], penalties[0]) if single else (indices, penalties)
 
@@ -83,7 +115,7 @@ def _gather_mask_keys(mask, positions):
 
 
 class _PrunePrompt:
-    def __init__(self, inputs, image_id, curve, count, method, weight):
+    def __init__(self, inputs, image_id, visual_count, curve, count, method, weight, per_view):
         ids, mask = inputs['input_ids'], inputs['attention_mask']
         self.valid = mask.bool()
         if not bool(self.valid[:, -1].all()) or bool((self.valid[:, :-1] & ~self.valid[:, 1:]).any()):
@@ -91,10 +123,14 @@ class _PrunePrompt:
         self.width = ids.shape[1]
         self.last = ids.new_full((len(ids),), self.width - 1)
         visual = (ids == image_id) & self.valid
-        if not 1 <= count <= len(curve) or not bool((visual.sum(1) == len(curve)).all()):
+        if (not 1 <= count <= visual_count or not bool((visual.sum(1) == visual_count).all())
+                or (curve is not None and curve.shape != (visual_count,))):
             raise ValueError('Invalid visual positions, curve, or keep count')
-        self.visual = visual.nonzero()[:, 1].view(len(ids), len(curve))
+        if method in ('corrected', 'mmr') and curve is None:
+            raise ValueError('Corrected attention requires a fitted bias curve')
+        self.visual = visual.nonzero()[:, 1].view(len(ids), visual_count)
         self.curve, self.count, self.method, self.weight = curve, count, method, weight
+        self.per_view = per_view
         self.raw = self.corrected = self.picks = self.penalties = self.kept = None
         self.prefill_mask = None
 
@@ -102,18 +138,20 @@ class _PrunePrompt:
         if self.raw is None:
             # If beam search is used, every beam starts from the same prompt.
             self.raw = _visual_attention(attn, kwargs, self.valid, self.last, self.visual)
-            self.corrected = self.raw - self.curve
+            if self.curve is not None:
+                self.corrected = self.raw - self.curve
 
     def prune(self, layer, args, outputs):
         if self.kept is not None:
             return
         hidden = outputs[0]
-        if self.method == 'mmr':
-            states = _gather_rows(hidden[:len(self.visual)], self.visual)
-            self.picks, self.penalties = mmr(self.corrected, states, self.count, self.weight)
-        else:
-            relevance = self.raw if self.method == 'raw' else self.corrected
+        relevance = self.raw if self.method in RAW_METHODS else self.corrected
+        if self.method in ('raw', 'corrected'):
             self.picks = topk(relevance, self.count)
+        else:
+            states = _gather_rows(hidden[:len(self.visual)], self.visual)
+            self.picks, self.penalties = mmr(relevance, states, self.count, self.weight,
+                                            method=self.method, per_view=self.per_view)
         keep = torch.ones_like(self.valid)
         keep.scatter_(1, self.visual, False)
         keep.scatter_(1, self.visual.gather(1, self.picks), True)
@@ -156,9 +194,10 @@ class _PrunePrompt:
 
     def details(self):
         penalties = [None] * len(self.picks) if self.penalties is None else self.penalties.tolist()
+        corrected = [None] * len(self.picks) if self.corrected is None else self.corrected.tolist()
         return [dict(picks=picks, raw=raw, corrected=corrected, penalties=penalty)
                 for picks, raw, corrected, penalty in
-                zip(self.picks.tolist(), self.raw.tolist(), self.corrected.tolist(), penalties)]
+                zip(self.picks.tolist(), self.raw.tolist(), corrected, penalties)]
 
 
 class _FirstTokenStep(StoppingCriteria):
@@ -185,7 +224,7 @@ class _FirstTokenStep(StoppingCriteria):
 @torch.inference_mode()
 def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9):
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
-    if method not in (None, 'raw', 'corrected', 'mmr'):
+    if method not in (None, 'corrected', 'mmr', *RAW_METHODS):
         raise ValueError(f'Unknown pruning method {method!r}')
     if method is not None and len(inputs['input_ids']) > 1:
         config = generation.get('generation_config', model.native.generation_config)
@@ -199,7 +238,8 @@ def generate(model, inputs, generation, shallow, *, method=None, curve=None, cou
     start = timer.mark()
     with ExitStack() as hooks:
         if method is not None:
-            state = _PrunePrompt(inputs, model.native.config.image_token_id, curve, count, method, weight)
+            state = _PrunePrompt(inputs, model.native.config.image_token_id, model.visual_token_len,
+                                 curve, count, method, weight, model.geometry['visual_tokens_per_view'])
             state.install(model.native.model.text_model.layers, shallow, hooks)
         tokens = model.generate_from_features(**inputs, **generation, stopping_criteria=[timer])
         end = timer.mark()

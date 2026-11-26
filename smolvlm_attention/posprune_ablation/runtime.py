@@ -11,7 +11,7 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_inference.cache import record_key, records
-from .decoder import attention_difference, generate
+from .decoder import RAW_METHODS, attention_difference, generate
 from .selection import stratified_test
 
 
@@ -33,6 +33,25 @@ def _scene(row):
     return log.group(1) if log else None
 
 
+def _select_test(test, test_file, evaluation_size, seed, evaluation_fraction):
+    if not test or (evaluation_size is not None and not 1 <= evaluation_size <= len(test)):
+        raise ValueError('Evaluation size must be within the test split or None for the full split')
+    if evaluation_fraction is not None and evaluation_size is not None:
+        raise ValueError('Specify an evaluation fraction or an evaluation size')
+    if evaluation_fraction is not None:
+        return stratified_test(test, test_file, evaluation_fraction, seed)
+    if evaluation_size is not None:
+        evaluation = [test[i] for i in sorted(random.Random(seed).sample(range(len(test)), evaluation_size))]
+    else:
+        evaluation = test
+    return evaluation, None
+
+
+def select_evaluation(prepared, evaluation_size, seed, *, evaluation_fraction=None):
+    test_file = prepared / 'test.jsonl'
+    return _select_test(list(records(test_file)), test_file, evaluation_size, seed, evaluation_fraction)
+
+
 def select_rows(prepared, calibration_size, evaluation_size, seed, *, evaluation_fraction=None):
     """Use validation for fitting, test for evaluation, and exclude any overlap."""
     val = list(records(prepared / 'val.jsonl'))
@@ -44,18 +63,8 @@ def select_rows(prepared, calibration_size, evaluation_size, seed, *, evaluation
     eligible = [row for row in val if record_key(row) not in test_frames and _scene(row) not in test_scenes]
     if calibration_size < 1 or len(eligible) < calibration_size:
         raise ValueError(f'Only {len(eligible)} disjoint validation questions for {calibration_size} calibration examples')
-    if not test or (evaluation_size is not None and not 1 <= evaluation_size <= len(test)):
-        raise ValueError('Evaluation size must be within the test split or None for the full split')
-    if evaluation_fraction is not None and evaluation_size is not None:
-        raise ValueError('Specify an evaluation fraction or an evaluation size')
     calibration = random.Random(seed).sample(eligible, calibration_size)
-    distribution = None
-    if evaluation_fraction is not None:
-        evaluation, distribution = stratified_test(test, test_file, evaluation_fraction, seed)
-    elif evaluation_size is not None:
-        evaluation = [test[i] for i in sorted(random.Random(seed).sample(range(len(test)), evaluation_size))]
-    else:
-        evaluation = test
+    evaluation, distribution = _select_test(test, test_file, evaluation_size, seed, evaluation_fraction)
     overlap_policy = 'scene ID or recording log and exact camera frame' if with_scenes else 'exact camera frame'
     return calibration, evaluation, overlap_policy, distribution
 
@@ -102,8 +111,10 @@ def _variants(keep_counts):
     return [(method, count) for count in keep_counts for method in ('raw', 'corrected', 'mmr')]
 
 
-def _validate_settings(visual_count, layers, calibration_batch, generation_batch, keep_counts, selection_examples):
-    if (visual_count < 4 or layers < DEEP or calibration_batch < 1 or generation_batch < 1 or selection_examples < 1
+def _validate_settings(visual_count, layers, calibration_batch, generation_batch, keep_counts, selection_examples,
+                       *, required_layer=None):
+    required_layer = DEEP if required_layer is None else required_layer
+    if (visual_count < 4 or layers < required_layer or calibration_batch < 1 or generation_batch < 1 or selection_examples < 1
             or not keep_counts or len(set(keep_counts)) != len(keep_counts)
             or any(type(count) is not int or not 1 <= count < visual_count for count in keep_counts)):
         raise ValueError('Invalid layer, token budget, or sample configuration')
@@ -153,7 +164,8 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples):
                                                      minlength=camera_count).tolist()
                 if details['penalties'] is not None and len(details['picks']) > 1:
                     penalty = np.abs(details['penalties'][1:])
-                    relevance = np.abs(np.array(details['corrected'])[details['picks'][1:]])
+                    scores = details['raw'] if method in RAW_METHODS else details['corrected']
+                    relevance = np.abs(np.array(scores)[details['picks'][1:]])
                     result['mean_abs_weighted_relevance'] = float(WEIGHT * relevance.mean())
                     result['mean_abs_weighted_similarity'] = float((1 - WEIGHT) * penalty.mean())
                 if index < selection_examples:
@@ -162,14 +174,18 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples):
     return paired
 
 
-def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selection_examples, batch_size):
-    curve = torch.as_tensor(fitted, device=session.device, dtype=torch.float32)
+def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selection_examples, batch_size, *, matrix=None):
+    curve = None if fitted is None else torch.as_tensor(fitted, device=session.device, dtype=torch.float32)
 
     # Warm both cases before comparing timings; rotate execution order across questions.
     warmup = _inputs(session, [warmup_row])
-    _answers(session, warmup, curve)
-    _answers(session, warmup, curve, 'mmr', min(keep_counts))
-    matrix = [(None, None), *_variants(keep_counts)]
+    if matrix is None:
+        _answers(session, warmup, curve)
+        _answers(session, warmup, curve, 'mmr', min(keep_counts))
+        matrix = [(None, None), *_variants(keep_counts)]
+    else:
+        for method, count in matrix:
+            _answers(session, warmup, curve, method, count)
     evaluation = iter(evaluation)
     pending = []
     offset = 0

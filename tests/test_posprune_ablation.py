@@ -32,6 +32,52 @@ def test_mmr_uses_relevance_then_penalizes_redundancy():
     assert penalties.tolist() == [0., 0.]
 
 
+def test_raw_mmr_uses_uncorrected_attention_without_a_bias_curve():
+    model, batch, _ = fixture()
+    inputs = {key: batch[key] for key in ('input_ids', 'attention_mask', 'visual_features')}
+    settings = dict(num_beams=1, max_new_tokens=3, min_new_tokens=3)
+    raw, _, details = generate(model, inputs, settings, 1, method='raw_mmr', count=5)
+    reference, _, zero_bias = generate(model, inputs, settings, 1, method='mmr', count=5,
+                                      curve=torch.zeros(model.visual_token_len))
+    assert torch.equal(raw, reference)
+    assert details[0]['corrected'] is None
+    assert details[0]['picks'] == zero_bias[0]['picks']
+    assert details[0]['penalties'] == zero_bias[0]['penalties']
+
+
+def test_intra_camera_mmr_selects_globally_and_applies_no_cross_camera_penalty():
+    relevance = torch.tensor([1., .9, .1, .0, .8, .01, .02, .03])
+    states = torch.ones((8, 2))
+    raw_picks, _ = mmr(relevance, states, 3, .9)
+    picks, penalties = mmr(relevance, states, 3, .9, method='intra_camera_mmr', per_view=4)
+    assert raw_picks.tolist() == [0, 1, 4]
+    assert picks.tolist() == [0, 4, 1]
+    assert penalties.tolist() == pytest.approx([0, 0, 1])
+
+
+def test_spatial_mmr_weights_cosine_by_grid_distance_and_camera():
+    from smolvlm_attention.posprune_ablation.decoder import _camera_similarity
+
+    similarities = torch.ones((2, 8, 8))
+    weighted = _camera_similarity(similarities, 4, 'spatial_aware_mmr')
+    assert weighted[0, 0, 0].item() == 1
+    assert weighted[0, 0, 1].item() == pytest.approx(.5 + .5 * np.exp(-1 / 8))
+    assert weighted[0, 0, 3].item() == pytest.approx(.5 + .5 * np.exp(-2 / 8))
+    assert weighted[0, 0, 4].item() == .5
+    assert torch.equal(weighted, weighted.transpose(-1, -2))
+
+
+@pytest.mark.parametrize('method', ['intra_camera_mmr', 'spatial_aware_mmr'])
+def test_camera_mmr_prunes_padded_batches_without_positional_correction(method):
+    model, batch, _, _ = padded_fixture(questions=('What?', 'What is visible? A road. A car.'))
+    inputs = {key: batch[key] for key in ('input_ids', 'attention_mask', 'visual_features')}
+    output, _, details = generate(model, inputs, dict(num_beams=1, max_new_tokens=2, min_new_tokens=2),
+                                  1, method=method, count=5)
+    assert output.shape == (2, 2)
+    assert all(item['corrected'] is None and len(set(item['picks'])) == 5 for item in details)
+    assert all(np.isfinite(item['penalties']).all() for item in details)
+
+
 @pytest.mark.parametrize('beams', [1, 3])
 def test_native_generation_uses_compact_layer_local_cache(beams):
     model, batch, _ = fixture()
@@ -221,6 +267,44 @@ def test_missing_cache_explains_noninteractive_dataset_attachment(tmp_path):
         resolve_cache_input(tmp_path, '', dataset='huyhuy12334/cache-smolvlm/versions/1', fingerprint='pinned')
 
 
+@pytest.mark.parametrize('camera_mmr', [False, True])
+def test_raw_mmr_report_compares_variants_without_mixing_historical_latency(tmp_path, monkeypatch, camera_mmr):
+    from smolvlm_attention.posprune_ablation import report, raw_mmr_report
+
+    methods = ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr') if camera_mmr else ('raw', 'raw_mmr')
+    budgets = (32,) if camera_mmr else (96, 32)
+    variants = [dict(name=f'{method}_{keep}', method=method, keep=keep,
+                     source='historical' if (method, keep) == ('raw', 96) else 'current')
+                for keep in budgets for method in methods]
+    config = dict(experiment='raw_mmr', variants=variants, evaluation_ids=['question'], visual_count=384,
+                  cameras=CAMERA_ORDER, per_view=64, question_type_distribution=None)
+    (tmp_path / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    selection = dict(picks=[0], raw=[.1], penalties=None)
+    measured = dict(prediction='A car.', generated_tokens=3, latency_ms=10,
+                    first_token_step_ms=4, camera_counts=[1, 0, 0, 0, 0, 0], selection=selection)
+    row = dict(sample_id='question', question='What?', ground_truth='A car.',
+               variants={variant['name']: measured for variant in variants if variant['source'] == 'current'})
+    (tmp_path / 'predictions.jsonl').write_text(json.dumps(row) + '\n', encoding='utf-8')
+    historical = dict(evaluation_ids=['question'], predictions=[{
+        key: measured[key] for key in ('prediction', 'generated_tokens', 'camera_counts', 'selection')}])
+
+    def quality(rows, names):
+        return {name: dict.fromkeys(('overall', 'bleu4', 'meteor', 'rouge_l', 'cider', 'yes_no_accuracy'),
+                                   2. if 'mmr' in name else 1.) for name in names}
+
+    monkeypatch.setattr(report, '_quality', quality)
+    assert len(raw_mmr_report.report_raw_mmr(tmp_path, None if camera_mmr else historical)) == 2
+    with (tmp_path / 'mmr_vs_raw.csv').open() as stream:
+        deltas = list(csv.DictReader(stream))
+    if camera_mmr:
+        assert [r['method'] for r in deltas] == list(methods[1:])
+        assert all(r['kept_tokens'] == '32' and r['delta_median_latency_ms'] == '0' for r in deltas)
+    else:
+        first, second = deltas
+        assert first['raw_source'] == 'historical' and first['delta_overall'] == '1.0'
+        assert first['delta_median_latency_ms'] == '' and second['delta_median_latency_ms'] == '0'
+
+
 def test_public_image_path_builds_reusable_fp16_features_in_camera_order(tmp_path, monkeypatch):
     from PIL import Image
     from smolvlm_attention.posprune_ablation import image_features
@@ -245,8 +329,10 @@ def test_public_image_path_builds_reusable_fp16_features_in_camera_order(tmp_pat
     np.testing.assert_array_equal(features, reference)
 
 
-@pytest.mark.parametrize('mounted', [True, False])
-def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_path, monkeypatch, mounted):
+@pytest.mark.parametrize(('mounted', 'raw_mmr', 'camera_mmr'),
+                         [(True, False, False), (False, False, False), (False, True, False), (False, True, True)])
+def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_path, monkeypatch, mounted, raw_mmr,
+                                                                        camera_mmr):
     from pathlib import Path
     from smolvlm_attention.posprune_ablation import parallel
 
@@ -255,6 +341,7 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
             for i in range(8)]
     (tmp_path / 'manifest.json').write_text('{"counts":{"val":3,"test":5}}', encoding='utf-8')
     monkeypatch.setattr(parallel, 'select_rows', lambda *args, **kwargs: (rows[:3], rows[3:], 'fixture', None))
+    monkeypatch.setattr(parallel, 'select_evaluation', lambda *args, **kwargs: (rows[3:], None))
     monkeypatch.setattr(torch.cuda, 'device_count', lambda: 2)
     validations = []
 
@@ -270,7 +357,7 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
             self.job = parallel._read(self.folder / 'job.json')
             jobs.append(self.job)
             rank = self.job['rank']
-            self.bias = self.folder.parent.parent / 'bias_curve.json'
+            self.bias = self.folder.parent.parent / ('generation_ready.json' if raw_mmr else 'bias_curve.json')
             self.done = False
             if self.job['features'] is not None:
                 parallel._json_write(self.folder / 'features_ready.json', True)
@@ -293,18 +380,31 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
 
     monkeypatch.setattr(parallel, 'validate_cache', validate)
     monkeypatch.setattr(parallel.subprocess, 'Popen', FakeProcess)
+    budgets = (32,) if camera_mmr else (96, 32) if raw_mmr else (5,)
     output = parallel.run_parallel('checkpoint.pt', tmp_path if mounted else None, tmp_path, tmp_path / 'results',
-                                   cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=(5,))
+        cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=budgets,
+        raw_mmr=raw_mmr, reuse_raw_96=raw_mmr and not camera_mmr,
+        expected_evaluation_ids=list('34567'), camera_mmr=camera_mmr)
     assert validations == (['expected'] if mounted else [])
     source = parallel._read(output / 'config.json')['feature_source']
     assert source['mode'] == ('mounted' if mounted else 'regenerated')
     if not mounted:
-        assert source['unique_frames'] == 8
-        assert len(jobs[0]['features']['frames']) == 8
+        assert source['unique_frames'] == (5 if raw_mmr else 8)
+        assert len(jobs[0]['features']['frames']) == source['unique_frames']
         assert not Path(jobs[0]['features']['directory']).exists()
     assert [job['generation_batch'] for job in jobs] == [4, 4]
     assert [[index for index, _ in job['evaluation']] for job in jobs] == [[0, 2, 4], [1, 3]]
-    assert parallel._read(output / 'bias_curve.json')['fitted'] == pytest.approx([4 / 3] * 24)
-    assert parallel._read(output / 'bias_curve.json')['evaluation_observed'] == pytest.approx([1.4] * 24)
+    if raw_mmr:
+        assert not (output / 'bias_curve.json').exists()
+        assert all(job['calibration'] == [] for job in jobs)
+        if camera_mmr:
+            assert jobs[0]['matrix'] == [[name, 32] for name in
+                                        ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')]
+            assert parallel._read(output / 'config.json')['spatial_redundancy'] == {'alpha': .5, 'sigma_grid_cells': 2.}
+        else:
+            assert jobs[0]['matrix'] == [['raw_mmr', 96], ['raw', 32], ['raw_mmr', 32]]
+    else:
+        assert parallel._read(output / 'bias_curve.json')['fitted'] == pytest.approx([4 / 3] * 24)
+        assert parallel._read(output / 'bias_curve.json')['evaluation_observed'] == pytest.approx([1.4] * 24)
     assert [json.loads(line)['sample_id'] for line in (output / 'predictions.jsonl').read_text().splitlines()] == list('34567')
     assert parallel._read(output / 'parallel_timing.json')['workers'] == 2

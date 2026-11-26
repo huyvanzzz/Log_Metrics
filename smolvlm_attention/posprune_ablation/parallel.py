@@ -18,9 +18,10 @@ from smolvlm_inference.cache import CAMERA_ORDER
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
+from .decoder import RAW_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
-from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, _config, _fit_curve, _generate_rows,
-                      _mean_difference, _validate_settings, select_rows)
+from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, _config, _fit_curve, _generate_rows,
+                      _mean_difference, _validate_settings, select_evaluation, select_rows)
 
 
 def _read(path):
@@ -56,8 +57,10 @@ def _worker(folder):
     session = _WorkerSession(job['checkpoint'], job['receipt'], job['camera_order'], job['rank'], features=features)
     model = session.model
     count = model.visual_token_len
+    matrix = job['matrix']
     _validate_settings(count, len(model.native.model.text_model.layers), job['calibration_batch'],
-                       job['generation_batch'], job['keep_counts'], job['selection_examples'])
+                       job['generation_batch'], job['keep_counts'], job['selection_examples'],
+                       required_layer=SHALLOW if matrix is not None else None)
     calibration, evaluation = job['calibration'], job['evaluation']
     print(f'{session.device} · {torch.cuda.get_device_name(session.device)}', flush=True)
     if features is not None:
@@ -65,17 +68,19 @@ def _worker(folder):
         _json_write(folder / 'features_ready.json', True)
         while not (folder.parent / 'features_ready.json').is_file():
             sleep(.4)
-    observed = _mean_difference(session, calibration, job['calibration_batch'], 'Calibration prefill')
-    held_out = _mean_difference(session, [row for _, row in evaluation], job['calibration_batch'], 'Held-out prefill')
-    _json_write(folder / 'prefill.json', dict(session=session.describe(),
-        gpu=torch.cuda.get_device_name(session.device), per_view=model.geometry['visual_tokens_per_view'],
-        observed=observed.tolist(), held_out=held_out.tolist()))
-    bias_path = folder.parent.parent / 'bias_curve.json'
-    while not bias_path.is_file():
+    stats = dict(session=session.describe(), gpu=torch.cuda.get_device_name(session.device),
+                 per_view=model.geometry['visual_tokens_per_view'])
+    if matrix is None:
+        observed = _mean_difference(session, calibration, job['calibration_batch'], 'Calibration prefill')
+        held_out = _mean_difference(session, [row for _, row in evaluation], job['calibration_batch'], 'Held-out prefill')
+        stats.update(observed=observed.tolist(), held_out=held_out.tolist())
+    _json_write(folder / 'prefill.json', stats)
+    release = folder.parent.parent / ('bias_curve.json' if matrix is None else 'generation_ready.json')
+    while not release.is_file():
         sleep(.4)
-    fitted = _read(bias_path)['fitted']
+    fitted = _read(release)['fitted'] if matrix is None else None
     rows = _generate_rows(session, evaluation, fitted, job['warmup'], job['keep_counts'],
-                          job['selection_examples'], job['generation_batch'])
+                          job['selection_examples'], job['generation_batch'], matrix=matrix)
     with (folder / 'predictions.jsonl').open('w', encoding='utf-8') as stream:
         for completed, row in enumerate(rows, 1):
             row['device'] = str(session.device)
@@ -126,14 +131,30 @@ def _wait_for_files(processes, folders, paths, stage):
 
 def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, camera_order,
                  gpu_count=2, calibration_size=800, evaluation_size=100, evaluation_fraction=None, calibration_batch=4,
-                 generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3):
+                 generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3,
+                 raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False):
     """Shard questions across GPUs and publish one fitted curve and one paired result."""
     if gpu_count < 1 or gpu_count > torch.cuda.device_count():
         raise ValueError(f'Requested {gpu_count} GPUs, found {torch.cuda.device_count()}')
     if generation_batch < 1 or calibration_batch < 1:
         raise ValueError('Calibration and generation batch sizes must be positive')
-    calibration, evaluation, policy, distribution = select_rows(
-        Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
+    if reuse_raw_96 and (not raw_mmr or 96 not in keep_counts or expected_evaluation_ids is None):
+        raise ValueError('Reusing raw_96 requires the raw MMR experiment, budget 96, and the historical cohort')
+    if camera_mmr and not raw_mmr:
+        raise ValueError('Camera MMR variants require the raw MMR experiment')
+    methods = RAW_METHODS if camera_mmr else RAW_METHODS[:2]
+    matrix = None
+    if raw_mmr:
+        calibration, policy = [], None
+        evaluation, distribution = select_evaluation(
+            Path(prepared), evaluation_size, seed, evaluation_fraction=evaluation_fraction)
+        matrix = [(method, keep) for keep in keep_counts for method in methods
+                  if not (reuse_raw_96 and method == 'raw' and keep == 96)]
+    else:
+        calibration, evaluation, policy, distribution = select_rows(
+            Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
+    if expected_evaluation_ids is not None and [row['sample_id'] for row in evaluation] != expected_evaluation_ids:
+        raise ValueError('Evaluation questions differ from the historical comparison cohort')
     if distribution:
         print(f'{len(evaluation):,} test questions selected by type:', flush=True)
         for group in distribution:
@@ -172,10 +193,10 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             features = dict(frames=frames, directory=temporary.name, workers=count, counts=dataset_counts)
         for rank, folder in enumerate(folders):
             _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=receipt,
-                features=features,
+                features=features, matrix=matrix,
                 camera_order=camera_order, rank=rank, calibration_batch=calibration_batch,
                 generation_batch=generation_batch, keep_counts=keep_counts,
-                selection_examples=selection_examples, warmup=calibration[0],
+                selection_examples=selection_examples, warmup=calibration[0] if calibration else evaluation[0],
                 calibration=calibration_shards[rank], evaluation=evaluation_shards[rank]))
             with (folder / 'worker.log').open('w', encoding='utf-8') as log:
                 command = [sys.executable, '-u', '-m', 'smolvlm_attention.posprune_ablation.parallel', str(folder)]
@@ -186,23 +207,34 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             _wait_for_files(processes, folders, [folder / 'features_ready.json' for folder in folders], 'feature extraction')
             feature_elapsed = perf_counter() - prefill_start
             _json_write(workers / 'features_ready.json', True)
-        print(f'Measuring calibration and held-out attention across {count} GPU worker(s).', flush=True)
+        if matrix is None:
+            print(f'Measuring calibration and held-out attention across {count} GPU worker(s).', flush=True)
         paths = [folder / 'prefill.json' for folder in folders]
         _wait_for_files(processes, folders, paths, 'prefill statistics')
         stats = [_read(path) for path in paths]
         primary = stats[0]
         config = _config(primary['session'], primary['per_view'], calibration, evaluation, policy, seed,
                          calibration_batch, generation_batch, keep_counts, evaluation_fraction, distribution)
+        if raw_mmr:
+            config.update(experiment='raw_mmr', deep=None, calibration_split=None, calibration_batch=None,
+                          variants=[dict(name=f'{method}_{keep}', method=method, keep=keep,
+                              source='historical' if reuse_raw_96 and method == 'raw' and keep == 96 else 'current')
+                              for keep in keep_counts for method in methods])
+        if camera_mmr:
+            config['spatial_redundancy'] = dict(alpha=SPATIAL_ALPHA, sigma_grid_cells=SPATIAL_SIGMA)
         config['feature_source'] = (dict(mode='regenerated', unique_frames=len(frames), **IMAGE_SOURCE)
                                     if frames is not None else dict(mode='mounted', fingerprint=cache_fingerprint))
         config['workers'] = [dict(device=item['session']['device'], gpu=item['gpu'],
                                  calibration_examples=len(a), evaluation_examples=len(b))
                              for item, a, b in zip(stats, calibration_shards, evaluation_shards)]
         _json_write(output / 'config.json', config)
-        observed = _weighted_mean([item['observed'] for item in stats], [len(shard) for shard in calibration_shards])
-        held_out = _weighted_mean([item['held_out'] for item in stats], [len(shard) for shard in evaluation_shards])
         generation_start = perf_counter()
-        _json_write(output / 'bias_curve.json', _fit_curve(observed, held_out))
+        if matrix is None:
+            observed = _weighted_mean([item['observed'] for item in stats], [len(shard) for shard in calibration_shards])
+            held_out = _weighted_mean([item['held_out'] for item in stats], [len(shard) for shard in evaluation_shards])
+            _json_write(output / 'bias_curve.json', _fit_curve(observed, held_out))
+        else:
+            _json_write(output / 'generation_ready.json', True)
         progress = [folder / 'progress.json' for folder in folders]
         with tqdm(total=len(evaluation), desc='Paired generation', unit='question') as bar:
             while not _check_workers(processes, folders):
