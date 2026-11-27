@@ -18,7 +18,7 @@ from smolvlm_inference.cache import CAMERA_ORDER, digest
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
-from .decoder import ATTENTION_QUERY_LIMIT, PREDICTOR_METHOD, RAW_METHODS, RAW_MMR_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
+from .decoder import ATTENTION_QUERY_LIMIT, PREDICTOR_METHODS, RAW_METHODS, RAW_MMR_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
 from .runtime import (DEEP, GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _choose_spline_smoothing,
                       _config, _fit_camera_curves, _fit_curve, _generate_rows, _mean_difference, _validate_settings,
@@ -216,7 +216,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         calibration, evaluation, policy, distribution = select_rows(
             Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
         if camera_bias_layers is not None:
-            methods = ('mmr', PREDICTOR_METHOD) if predictor is not None else ('raw', 'corrected', 'mmr', 'raw_mmr')
+            methods = ('mmr', *PREDICTOR_METHODS) if predictor is not None else ('raw', 'corrected', 'mmr', 'raw_mmr')
             matrix = [(method, keep) for keep in keep_counts for method in methods]
     if expected_evaluation_ids is not None and [row['sample_id'] for row in evaluation] != expected_evaluation_ids:
         raise ValueError('Evaluation questions differ from the historical comparison cohort')

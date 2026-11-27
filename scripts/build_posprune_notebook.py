@@ -116,24 +116,31 @@ SPLINE_SMOOTHING = {
     predictor_setup = ''
     if predictor_comparison:
         overview = '''
-# SmolVLM spline + MMR versus MLP + MMR at block 3
+# SmolVLM Spline + MMR, MLP Top-32 and MLP + MMR at block 3
 
-Set `PREDICTOR_CHECKPOINT` to your trained after2 `predictor_best.pt`, or set a Hugging Face repository and revision with that file. Select **GPU T4 ×2**, enable Internet, and use **Save & Run All**. A Hugging Face predictor can be run without attaching a Kaggle Input.
+Select **GPU T4 ×2**, enable Internet, and use **Save & Run All**. The notebook downloads the verified after2 `checkpoints1/predictor_best.pt` from [attention-mlp, version 1](https://www.kaggle.com/models/z332k5/attention-mlp/other/default/1) through the public API, without attaching a Kaggle Input. To use another checkpoint source, clear `PREDICTOR_KAGGLE_MODEL` and set one of the alternative sources in the first code cell.
 
-Both variants keep 32 of 384 visual tokens immediately after decoder block 3 (`layers[2]`). Both run on the same 4,204 stratified DriveLM test questions with the same six-camera features, backbone, batch, FP32 greedy decoding, token budget, MMR λ = 0.9, min–max relevance normalization, and cosine redundancy from block-3 outputs.
+All three variants keep 32 of 384 visual tokens immediately after decoder block 3 (`layers[2]`). They run on the same 4,204 stratified DriveLM test questions with the same six-camera features, backbone, batch and FP32 greedy decoding. The two MMR variants use λ = 0.9, min–max relevance normalization and cosine redundancy from block-3 outputs.
 
 - **Spline + MMR** subtracts a separate smoothing spline per camera from the attention at block 3. The fitted difference is block 3 minus block 23. Smoothing is selected on two disjoint recording groups from the 800 validation questions, then fit on all 800.
+- **MLP Top-32** takes the 32 highest log probabilities from the frozen after2 MAP predictor, with ties decided by the original visual index.
 - **MLP + MMR** uses the frozen after2 MAP predictor from the original branch, with the last prompt query and the visual hidden states after block 3. It uses the existing trained weights and interprets its log probabilities as relevance probabilities before MMR.
 
-The report includes paired answers, selected token indices, quality and latency under the same timing procedure, and the spline plots. Only the source of MMR relevance changes during evaluation.
+The report includes paired answers, selected token indices, quality and latency under the same timing procedure, and the spline plots. The comparison CSV includes score and answer changes relative to MLP Top-32.
 '''
         settings = settings.replace('KEEP_COUNTS = (32, 64)', 'KEEP_COUNTS = (32,)').replace(
             'CAMERA_BIAS_LAYERS = (2, 23)', 'CAMERA_BIAS_LAYERS = (3, 23)') + '''
-PREDICTOR_CHECKPOINT = ''  # Exact local path to the trained after2 predictor_best.pt.
+PREDICTOR_KAGGLE_MODEL = 'z332k5/attention-mlp/other/default/1'
+PREDICTOR_KAGGLE_MODEL_MEMBER = 'checkpoints1/predictor_best.pt'
+PREDICTOR_KAGGLE_MODEL_SHA256 = '80b3be94ed4659c08123df290c49c330e77e1ff657f962153f62cdbfcfbc324f'
+PREDICTOR_CHECKPOINT = ''  # Optional local replacement for the pinned after2 checkpoint.
 PREDICTOR_HF_REPO = ''  # Alternative Hugging Face location for the existing predictor.
 PREDICTOR_HF_REVISION = ''  # Required when using the Hugging Face option.
 PREDICTOR_HF_FILENAME = 'predictor_best.pt'
 PREDICTOR_HF_REPO_TYPE = 'model'
+PREDICTOR_KAGGLE_RUN = ''  # e.g. 'owner/training-notebook-slug/3' for a saved version.
+PREDICTOR_KAGGLE_FILE = 'predictor_best.pt'  # Can also name the training output ZIP.
+PREDICTOR_KAGGLE_SECRET = ''  # Optional Kaggle Secret name holding an API token for private output.
 '''
         for package in ('smolvlm_map_predictor', 'smolvlm_map_predictor_after2'):
             for name in ('__init__.py', 'model.py'):
@@ -144,15 +151,14 @@ PREDICTOR_HF_REPO_TYPE = 'model'
         run_folder = 'smolvlm-posprune-spline-vs-mlp-after3-32'
         run_options += ',\n                      predictor_checkpoint=predictor_checkpoint'
         predictor_setup = '''
-if PREDICTOR_CHECKPOINT and PREDICTOR_HF_REPO:
-    raise ValueError('Choose a local predictor checkpoint or a Hugging Face repository.')
-if PREDICTOR_CHECKPOINT:
-    predictor_checkpoint = Path(PREDICTOR_CHECKPOINT).resolve(strict=True)
-elif PREDICTOR_HF_REPO and PREDICTOR_HF_REVISION:
-    predictor_checkpoint = Path(hf_hub_download(repo_id=PREDICTOR_HF_REPO, revision=PREDICTOR_HF_REVISION,
-        filename=PREDICTOR_HF_FILENAME, repo_type=PREDICTOR_HF_REPO_TYPE))
-else:
-    raise ValueError('Set the path to your trained after2 predictor_best.pt, or its Hugging Face repository and revision.')
+from smolvlm_attention.posprune_ablation.predictor_input import resolve_predictor_input
+
+predictor_checkpoint = resolve_predictor_input(
+    work / 'predictor_input', checkpoint=PREDICTOR_CHECKPOINT, hf_repo=PREDICTOR_HF_REPO,
+    hf_revision=PREDICTOR_HF_REVISION, hf_filename=PREDICTOR_HF_FILENAME, hf_repo_type=PREDICTOR_HF_REPO_TYPE,
+    kaggle_run=PREDICTOR_KAGGLE_RUN, kaggle_file=PREDICTOR_KAGGLE_FILE, kaggle_secret=PREDICTOR_KAGGLE_SECRET,
+    kaggle_model=PREDICTOR_KAGGLE_MODEL, kaggle_model_member=PREDICTOR_KAGGLE_MODEL_MEMBER,
+    kaggle_model_sha256=PREDICTOR_KAGGLE_MODEL_SHA256)
 '''
     cells = [
         cell('markdown', overview),
@@ -200,13 +206,13 @@ if GPU_COUNT < 1:
 worker_count = min(GPU_COUNT, visible_gpus)
 print(f'Using {worker_count} of {visible_gpus} visible GPU(s).')
 
+work = Path('/kaggle/working/RUN_FOLDER')
 PREDICTOR_SETUP
 cache_dir = None
 if CACHE_INPUT_DIR:
     cache_dir = resolve_cache_input('/kaggle/input', CACHE_INPUT_DIR, dataset=CACHE_DATASET,
                                    fingerprint=CACHE_FINGERPRINT)
     print(f'Using mounted feature cache: {cache_dir}')
-work = Path('/kaggle/working/RUN_FOLDER')
 prepared_dir = work / 'prepared_data'
 for name in ('manifest.json', 'train.jsonl', 'val.jsonl', 'test.jsonl'):
     hf_hub_download(repo_id=PREPARED_REPO, repo_type='dataset', revision=PREPARED_REVISION,

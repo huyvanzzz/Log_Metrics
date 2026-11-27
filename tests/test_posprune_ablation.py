@@ -119,6 +119,31 @@ def test_attention_minmax_scales_each_prompt_and_handles_flat_scores():
     torch.testing.assert_close(minmax_attention(scores), expected)
 
 
+def test_predictor_topk_ranks_log_probabilities_without_mmr(monkeypatch):
+    from smolvlm_attention.posprune_ablation import decoder
+
+    ids = torch.tensor([[0, 9, 9, 9, 1]])
+    inputs = dict(input_ids=ids, attention_mask=ids.ne(0))
+    hidden = torch.arange(10.).reshape(1, 5, 2)
+    log_probs = torch.tensor([[-1002., -1001., -1001.]])
+
+    def predictor(visual, query, visual_positions, query_positions):
+        torch.testing.assert_close(visual, hidden[:, 1:4])
+        torch.testing.assert_close(query, hidden[:, -1:])
+        assert visual_positions.tolist() == [[0, 1, 2]] and query_positions.tolist() == [[3]]
+        return log_probs
+
+    def forbidden_mmr(*args, **kwargs):
+        pytest.fail('Predictor top-k must skip MMR')
+
+    monkeypatch.setattr(decoder, 'mmr', forbidden_mmr)
+    state = decoder._PrunePrompt(inputs, 9, 3, None, 2, 'predictor_topk', .9, 3, 'minmax', predictor)
+    state.prune(None, (), (hidden,))
+    assert state.picks.tolist() == [[1, 2]]
+    assert state.details()[0]['penalties'] is None
+    torch.testing.assert_close(state.relevance, log_probs)
+
+
 @pytest.mark.parametrize('method', ['raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr'])
 def test_minmax_relevance_is_used_by_raw_mmr_variants_only(method):
     from smolvlm_attention.posprune_ablation.decoder import minmax_attention
@@ -556,7 +581,7 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
         if camera_bias == 'paired':
             assert (config['shallow'], config['deep'], config['pruning_layer_index']) == (3, 23, 2)
             assert config['experiment'] == 'spline_vs_predictor' and curve['fit_method'] == 'smoothing_spline'
-            assert [v['name'] for v in config['variants']] == ['mmr_32', 'predictor_mmr_32']
+            assert [v['name'] for v in config['variants']] == ['mmr_32', 'predictor_topk_32', 'predictor_mmr_32']
             assert sorted(i for group in config['spline_cv_group_ids'] for i in group) == list('012')
             assert all(job['predictor']['sha256'] == config['predictor_sha256'] for job in jobs)
         elif camera_bias:

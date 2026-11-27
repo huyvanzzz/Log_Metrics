@@ -13,6 +13,9 @@ import numpy as np
 from smolvlm_attention.plotting import _STYLE, _export, plt
 
 
+PREDICTOR_LABELS = dict(mmr='Spline + MMR', predictor_topk='MLP Top-32', predictor_mmr='MLP + MMR')
+
+
 def _quality(rows, names):
     from pycocoevalcap.bleu.bleu import Bleu
     from pycocoevalcap.cider.cider import Cider
@@ -54,6 +57,14 @@ def _csv(path, rows):
         writer.writerows(rows)
 
 
+def _selection_reference(config):
+    if config.get('experiment') != 'spline_vs_predictor':
+        return ('raw', 'corrected'), ('raw only', 'corrected only')
+    if any(v['method'] == 'predictor_topk' for v in config['variants']):
+        return ('predictor_topk', 'predictor_mmr'), ('MLP Top-32 only', 'MLP + MMR only')
+    return ('mmr', 'predictor_mmr'), ('spline only', 'MLP only')
+
+
 def _selection_rows(rows, config):
     per_view = config['per_view']
     side = isqrt(per_view)
@@ -61,8 +72,7 @@ def _selection_rows(rows, config):
         raise ValueError('Selection report requires square camera token grids')
     selections = []
     predictor_comparison = config.get('experiment') == 'spline_vs_predictor'
-    first_method, second_method = ('mmr', 'predictor_mmr') if predictor_comparison else ('raw', 'corrected')
-    first_only, second_only = ('spline only', 'MLP only') if predictor_comparison else ('raw only', 'corrected only')
+    (first_method, second_method), (first_only, second_only) = _selection_reference(config)
     for row in rows:
         sample = row['variants']
         for variant in config['variants']:
@@ -96,6 +106,7 @@ def _summarize(rows, config):
     names = {} if matched_raw or predictor_comparison else {'baseline': config['visual_count']}
     names.update({v['name']: v['keep'] for v in config['variants']})
     quality = _quality(rows, names)
+    has_predictor_topk = predictor_comparison and any(v['method'] == 'predictor_topk' for v in config['variants'])
     batches = {row.get('batch_id', i): row for i, row in enumerate(rows)}
     summary = []
     for name, count in names.items():
@@ -117,6 +128,12 @@ def _summarize(rows, config):
                       delta_overall=scores['overall'] - quality[reference]['overall'],
                       answer_changed_pct=100 * mean(row['variants'][reference]['prediction'] != sample['prediction']
                                                    for row, sample in zip(rows, samples)))
+        if has_predictor_topk:
+            topk = f'predictor_topk_{count}'
+            record.update(mmr_lambda=None if name == topk else config['weight'],
+                          delta_overall_vs_mlp_topk=scores['overall'] - quality[topk]['overall'],
+                          answer_changed_pct_vs_mlp_topk=100 * mean(row['variants'][topk]['prediction'] != sample['prediction']
+                              for row, sample in zip(rows, samples)))
         for key in ('mean_abs_weighted_relevance', 'mean_abs_weighted_similarity'):
             values = [sample[key] for sample in samples if key in sample]
             record[key] = mean(values) if values else None
@@ -179,14 +196,14 @@ def _selection_figure(selections, config, output):
     example = [row for row in selections if row['sample_id'] == first]
     budgets = sorted({row['keep'] for row in example}, reverse=True)
     predictor_comparison = config.get('experiment') == 'spline_vs_predictor'
-    first_only, second_only = ('spline only', 'MLP only') if predictor_comparison else ('raw only', 'corrected only')
+    _, (first_only, second_only) = _selection_reference(config)
     colors = {'both': '#366e57', first_only: '#4677a2', second_only: '#c36719', 'neither': '#8a7aab'}
     fig, axes = plt.subplots(len(budgets), 1, figsize=(11, 2.7 * len(budgets) + 1),
                              sharex=True, squeeze=False, layout='constrained')
     method_labels = dict(raw='Raw attention', corrected='Corrected attention', mmr='Corrected + MMR',
-                         raw_mmr='Raw + MMR', predictor_mmr='MLP + MMR')
+                         raw_mmr='Raw + MMR')
     if predictor_comparison:
-        method_labels['mmr'] = 'Spline + MMR'
+        method_labels.update(PREDICTOR_LABELS)
     methods = tuple(dict.fromkeys(variant['method'] for variant in config['variants']))
     labels = [method_labels[method] for method in methods]
     for budget, ax in zip(budgets, axes[:, 0]):
@@ -214,8 +231,8 @@ def _comparison_figure(summary, output, *, matched_raw=False, predictor_comparis
     labels = [row['variant'].replace('_', '\n') for row in summary]
     colors = {'baseline': '#555555', 'raw': '#4677a2', 'corrected': '#c36719', 'mmr': '#267862', 'raw_mmr': '#8a7aab'}
     if predictor_comparison:
-        labels = ['Spline + MMR', 'MLP + MMR']
-        colors['predictor_mmr'] = '#8a7aab'
+        labels = [PREDICTOR_LABELS[row['variant'].rsplit('_', 1)[0]] for row in summary]
+        colors.update(predictor_topk='#4677a2', predictor_mmr='#8a7aab')
     for ax, key, title in zip(axes, ('delta_overall', 'median_first_token_step_ms', 'median_latency_ms'),
             ('Change in Overall', 'First token step\nbatch median (ms)', 'Generation time\nbatch median (ms)')):
         baseline = (0 if key == 'delta_overall' else None) if matched_raw else summary[0][key]
@@ -224,7 +241,7 @@ def _comparison_figure(summary, output, *, matched_raw=False, predictor_comparis
         if baseline is not None:
             ax.axhline(baseline, color='0.35', linestyle='--', lw=1)
         ax.set_ylabel(title)
-    fig.suptitle('Spline and MLP, both using MMR at 32 tokens' if predictor_comparison else
+    fig.suptitle('Spline and MLP pruning at 32 tokens' if predictor_comparison else
                  'Pruning variants with matched-budget raw references' if matched_raw else
                  'Unpruned baseline and matched-budget pruning variants')
     return _export(fig, output, 'pruning_comparison' if matched_raw or predictor_comparison else 'baseline_vs_pruned', 180)

@@ -11,7 +11,7 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_inference.cache import record_key, records
-from .decoder import PREDICTOR_METHOD, RAW_MMR_METHODS, attention_difference, generate
+from .decoder import PREDICTOR_METHODS, RAW_MMR_METHODS, attention_difference, generate
 from .selection import stratified_test
 
 
@@ -97,7 +97,7 @@ def _write_json(path, payload):
 def _answers(session, inputs, curve, method=None, count=None, *, mmr_weight=WEIGHT, attention_normalization='none',
              pruning_layer=None):
     pruning_layer = SHALLOW if pruning_layer is None else pruning_layer
-    predictor_options = {'predictor': session.predictor} if method == PREDICTOR_METHOD else {}
+    predictor_options = {'predictor': session.predictor} if method in PREDICTOR_METHODS else {}
     tokens, timing, details = generate(session.model, inputs, GENERATION, pruning_layer,
                                        method=method, curve=curve, count=count, weight=mmr_weight,
                                        attention_normalization=attention_normalization, **predictor_options)

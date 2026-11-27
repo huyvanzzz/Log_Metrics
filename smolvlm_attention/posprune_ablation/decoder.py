@@ -14,7 +14,7 @@ from smolvlm_attention.collector import _prepare
 
 RAW_METHODS = ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')
 RAW_MMR_METHODS = (*RAW_METHODS[1:], 'attention_mmr')
-PREDICTOR_METHOD = 'predictor_mmr'
+PREDICTOR_METHODS = ('predictor_topk', 'predictor_mmr')
 ATTENTION_QUERY_LIMIT = 16
 SPATIAL_ALPHA = 0.5
 SPATIAL_SIGMA = 2.0
@@ -166,7 +166,7 @@ class _PrunePrompt:
         self.per_view = per_view
         self.attention_normalization = attention_normalization
         self.predictor = predictor
-        if method == PREDICTOR_METHOD:
+        if method in PREDICTOR_METHODS:
             self.positions = self.valid.long().cumsum(dim=1) - 1
         self.raw = self.corrected = self.picks = self.penalties = self.kept = None
         self.prefill_mask = None
@@ -185,20 +185,22 @@ class _PrunePrompt:
         if self.kept is not None:
             return
         hidden = outputs[0]
-        if self.method == PREDICTOR_METHOD:
+        if self.method in PREDICTOR_METHODS:
             features = _gather_rows(hidden, self.visual)
             query = self.last[:, None]
             relevance = self.predictor(features, _gather_rows(hidden, query), self.positions.gather(1, self.visual),
-                                       self.positions.gather(1, query)).exp()
+                                       self.positions.gather(1, query))
+            if self.method == 'predictor_mmr':
+                relevance = relevance.exp()
         else:
             relevance = self.corrected if self.method in ('corrected', 'mmr') else self.raw
-        if self.attention_normalization == 'minmax' and self.method in (*RAW_MMR_METHODS, 'mmr', PREDICTOR_METHOD):
+        if self.attention_normalization == 'minmax' and self.method in (*RAW_MMR_METHODS, 'mmr', 'predictor_mmr'):
             relevance = minmax_attention(relevance)
         self.relevance = relevance
-        if self.method in ('raw', 'corrected'):
+        if self.method in ('raw', 'corrected', 'predictor_topk'):
             self.picks = topk(relevance, self.count)
         else:
-            if self.method != PREDICTOR_METHOD:
+            if self.method != 'predictor_mmr':
                 features = (self.patterns if self.method == 'attention_mmr'
                             else _gather_rows(hidden[:len(self.visual)], self.visual))
             self.picks, self.penalties = mmr(relevance, features, self.count, self.weight,
@@ -238,7 +240,7 @@ class _PrunePrompt:
     def install(self, layers, shallow, hooks):
         layer = layers[shallow - 1]
         handles = [layer.register_forward_hook(self.prune)]
-        if self.method != PREDICTOR_METHOD:
+        if self.method not in PREDICTOR_METHODS:
             handles.append(layer.self_attn.register_forward_pre_hook(self.capture, with_kwargs=True))
         handles.extend(layer.register_forward_pre_hook(self.adjust, with_kwargs=True) for layer in layers[shallow:])
         for handle in handles:
@@ -278,9 +280,9 @@ class _FirstTokenStep(StoppingCriteria):
 def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9,
              attention_normalization='none', predictor=None):
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
-    if method not in (None, 'corrected', 'mmr', 'raw', *RAW_MMR_METHODS, PREDICTOR_METHOD):
+    if method not in (None, 'corrected', 'mmr', 'raw', *RAW_MMR_METHODS, *PREDICTOR_METHODS):
         raise ValueError(f'Unknown pruning method {method!r}')
-    if method == PREDICTOR_METHOD and (predictor is None or shallow != 3 or generation.get('num_beams', 1) != 1):
+    if method in PREDICTOR_METHODS and (predictor is None or shallow != 3 or generation.get('num_beams', 1) != 1):
         raise ValueError('The after2 predictor requires its trained checkpoint, layer index 2 and single-beam decoding')
     if attention_normalization not in ('none', 'minmax'):
         raise ValueError('Attention normalization must be none or minmax')
