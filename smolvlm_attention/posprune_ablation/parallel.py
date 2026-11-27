@@ -18,7 +18,7 @@ from smolvlm_inference.cache import CAMERA_ORDER
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
-from .decoder import ATTENTION_QUERY_LIMIT, RAW_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
+from .decoder import ATTENTION_QUERY_LIMIT, RAW_METHODS, RAW_MMR_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
 from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _config, _fit_curve, _generate_rows,
                       _mean_difference, _validate_settings, mmr_sweep_variants, select_evaluation, select_rows)
@@ -59,9 +59,10 @@ def _worker(folder):
     model = session.model
     count = model.visual_token_len
     matrix = job['matrix']
+    pruning_layer = job['pruning_layer']
     _validate_settings(count, len(model.native.model.text_model.layers), job['calibration_batch'],
                        job['generation_batch'], job['keep_counts'], job['selection_examples'],
-                       required_layer=SHALLOW if matrix is not None else None)
+                       required_layer=pruning_layer if matrix is not None else None)
     calibration, evaluation = job['calibration'], job['evaluation']
     print(f'{session.device} · {torch.cuda.get_device_name(session.device)}', flush=True)
     if features is not None:
@@ -82,7 +83,8 @@ def _worker(folder):
     fitted = _read(release)['fitted'] if matrix is None else None
     rows = _generate_rows(session, evaluation, fitted, job['warmup'], job['keep_counts'],
                           job['selection_examples'], job['generation_batch'], matrix=matrix,
-                          mmr_weight=job['mmr_weight'], attention_normalization=job['attention_normalization'])
+                          mmr_weight=job['mmr_weight'], attention_normalization=job['attention_normalization'],
+                          pruning_layer=pruning_layer)
     with (folder / 'predictions.jsonl').open('w', encoding='utf-8') as stream:
         for completed, row in enumerate(rows, 1):
             row['device'] = str(session.device)
@@ -135,18 +137,27 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                  gpu_count=2, calibration_size=800, evaluation_size=100, evaluation_fraction=None, calibration_batch=4,
                  generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3,
                  raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False,
-                 mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None, mmr_sweep=None):
+                 mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None, mmr_sweep=None,
+                 pruning_layer=SHALLOW, mmr_sweep_methods=None):
     """Shard questions across GPUs and publish one fitted curve and one paired result."""
     if gpu_count < 1 or gpu_count > torch.cuda.device_count():
         raise ValueError(f'Requested {gpu_count} GPUs, found {torch.cuda.device_count()}')
     if generation_batch < 1 or calibration_batch < 1:
         raise ValueError('Calibration and generation batch sizes must be positive')
+    if type(pruning_layer) is not int or pruning_layer < 1:
+        raise ValueError('The pruning layer must be a positive one-based decoder block number')
+    if pruning_layer != SHALLOW and (not raw_mmr or reuse_raw_96):
+        raise ValueError('A different pruning layer requires raw MMR and a current top-k reference')
     if reuse_raw_96 and (not raw_mmr or 96 not in keep_counts or expected_evaluation_ids is None):
         raise ValueError('Reusing raw_96 requires the raw MMR experiment, budget 96, and the historical cohort')
     if reuse_raw_96 and evaluation_subset_size is not None:
         raise ValueError('Full-cohort historical predictions cannot be reused with an evaluation subset')
     if camera_mmr and not raw_mmr:
         raise ValueError('Camera MMR variants require the raw MMR experiment')
+    sweep_methods = RAW_MMR_METHODS if mmr_sweep_methods is None else tuple(mmr_sweep_methods)
+    if mmr_sweep_methods is not None and (mmr_sweep is None or not sweep_methods
+            or len(set(sweep_methods)) != len(sweep_methods) or any(method not in RAW_MMR_METHODS for method in sweep_methods)):
+        raise ValueError('Select unique supported MMR methods for the lambda sweep')
     if mmr_sweep is not None:
         if not raw_mmr or reuse_raw_96 or not mmr_sweep or len(set(mmr_sweep)) != len(mmr_sweep):
             raise ValueError('The MMR sweep requires a raw MMR run, unique weights, and a current top-k reference')
@@ -162,7 +173,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         calibration, policy = [], None
         evaluation, distribution = select_evaluation(
             Path(prepared), evaluation_size, seed, evaluation_fraction=evaluation_fraction)
-        matrix = (mmr_sweep_variants(keep_counts, mmr_sweep) if mmr_sweep is not None
+        matrix = (mmr_sweep_variants(keep_counts, mmr_sweep, methods=sweep_methods) if mmr_sweep is not None
                   else [(method, keep) for keep in keep_counts for method in methods
                         if not (reuse_raw_96 and method == 'raw' and keep == 96)])
     else:
@@ -211,7 +222,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             features = dict(frames=frames, directory=temporary.name, workers=count, counts=dataset_counts)
         for rank, folder in enumerate(folders):
             _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=receipt,
-                features=features, matrix=matrix, mmr_weight=mmr_weight,
+                features=features, matrix=matrix, mmr_weight=mmr_weight, pruning_layer=pruning_layer,
                 attention_normalization=attention_normalization,
                 camera_order=camera_order, rank=rank, calibration_batch=calibration_batch,
                 generation_batch=generation_batch, keep_counts=keep_counts,
@@ -238,16 +249,18 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             config.update(evaluation_parent_questions=parent_size, evaluation_parent_fraction=evaluation_fraction,
                           evaluation_fraction=len(evaluation) / sum(row['full_count'] for row in distribution))
         if raw_mmr:
-            config.update(experiment='raw_mmr', deep=None, calibration_split=None, calibration_batch=None,
+            config.update(experiment='raw_mmr', shallow=pruning_layer, pruning_layer_index=pruning_layer - 1,
+                          deep=None, calibration_split=None, calibration_batch=None,
                           weight=mmr_weight, attention_normalization=attention_normalization,
                           variants=[dict(name=f'{method}_{keep}', method=method, keep=keep,
                               source='historical' if reuse_raw_96 and method == 'raw' and keep == 96 else 'current')
                               for keep in keep_counts for method in methods])
         if mmr_sweep is not None:
-            config.update(variants=matrix, weight=None, mmr_lambdas=list(mmr_sweep),
-                          attention_redundancy=dict(query_window=ATTENTION_QUERY_LIMIT,
-                                                    representation='incoming_attention_by_text_query_and_head'))
-        if camera_mmr or mmr_sweep is not None:
+            config.update(variants=matrix, weight=None, mmr_lambdas=list(mmr_sweep))
+            if 'attention_mmr' in sweep_methods:
+                config['attention_redundancy'] = dict(query_window=ATTENTION_QUERY_LIMIT,
+                    representation='incoming_attention_by_text_query_and_head')
+        if (mmr_sweep is None and camera_mmr) or (mmr_sweep is not None and 'spatial_aware_mmr' in sweep_methods):
             config['spatial_redundancy'] = dict(alpha=SPATIAL_ALPHA, sigma_grid_cells=SPATIAL_SIGMA)
         config['feature_source'] = (dict(mode='regenerated', unique_frames=len(frames), **IMAGE_SOURCE)
                                     if frames is not None else dict(mode='mounted', fingerprint=cache_fingerprint))

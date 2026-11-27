@@ -21,7 +21,8 @@ def evaluation_protocol(results):
                 checkpoint_sha256=Path(config['session']['checkpoint']).name, feature_source=config['feature_source'])
 
 
-def main(*, sweep=False):
+def main(*, sweep=False, layer_23=False):
+    sweep = sweep or layer_23
     protocol = json.dumps(evaluation_protocol(RESULTS), ensure_ascii=False, separators=(',', ':'))
     packed = source_bundle({'raw_mmr_protocol.json': protocol})
     overview = '''
@@ -51,10 +52,29 @@ Raw top-32 runs once. Four MMR methods each run at λ = 0.5, 0.7 and 0.9. Every 
 
 The 13 configurations use FP32 greedy decoding and one shared raw top-32 reference. The report includes quality and latency deltas and an Overall-versus-lambda plot.
 '''
+    if layer_23:
+        overview = '''
+# SmolVLM MMR lambda sweep after decoder block 23
+
+Choose **GPU T4 ×2**, enable Internet, and use **Save & Run All**. The notebook downloads the pinned model and data, then builds shared visual features without a Kaggle Input.
+
+All configurations process the 384 visual tokens through block 23 (`layers[22]`). After block 23, they retain 32 visual tokens for block 24 onward. Raw top-32 uses attention from the final prompt token at block 23. The three MMR methods apply per-question min–max scaling to that same relevance and compute redundancy from the visual hidden states output by block 23.
+
+- **Raw MMR** uses hidden-state cosine across all visual tokens.
+- **Intra-camera MMR** applies the penalty only within the same camera.
+- **Spatial-aware MMR** weights hidden-state cosine by distance on the same camera's 8×8 grid. Cross-camera pairs keep half their cosine.
+
+Each MMR method runs at λ = 0.5, 0.7 and 0.9. The ten configurations use the same 4,204 stratified questions and FP32 greedy decoding. Positional bias calibration is skipped. The report shows quality and latency deltas against the raw top-32 reference run at block 23 and plots Overall score deltas against λ.
+'''
     budget = (32,) if sweep else (32, 64)
     settings = 'MMR_LAMBDAS = (0.5, 0.7, 0.9)' if sweep else 'MMR_LAMBDA = 0.9'
     options = 'mmr_sweep=MMR_LAMBDAS' if sweep else 'mmr_weight=MMR_LAMBDA'
     work_folder = 'smolvlm-mmr-sweep-32' if sweep else 'smolvlm-raw-mmr-32-64'
+    if layer_23:
+        settings += ('\nPRUNING_LAYER = 23  # One-based decoder block number, index 22.\n'
+                     "MMR_METHODS = ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')")
+        options += ',\n    pruning_layer=PRUNING_LAYER, mmr_sweep_methods=MMR_METHODS'
+        work_folder = 'smolvlm-mmr-sweep-layer23-32'
     cells = [
         cell('markdown', overview),
         cell('code', f'''
@@ -163,6 +183,8 @@ for path in (output / 'comparison.csv', output / 'mmr_vs_raw.csv', output / 'pai
     notebook = dict(cells=cells, metadata={'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},
                                           'accelerator': 'GPU'}, nbformat=4, nbformat_minor=4)
     name = 'mmr_sweep' if sweep else 'raw_mmr'
+    if layer_23:
+        name = 'mmr_sweep_layer23'
     target = ROOT / f'notebooks/kaggle_smolvlm_posprune_{name}.ipynb'
     target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
 
@@ -170,4 +192,6 @@ for path in (output / 'comparison.csv', output / 'mmr_vs_raw.csv', output / 'pai
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--lambda-sweep', action='store_true')
-    main(sweep=parser.parse_args().lambda_sweep)
+    parser.add_argument('--layer-23', action='store_true', help='Build the block-23 hidden-state MMR sweep')
+    args = parser.parse_args()
+    main(sweep=args.lambda_sweep, layer_23=args.layer_23)

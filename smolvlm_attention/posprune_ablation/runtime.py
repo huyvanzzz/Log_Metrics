@@ -93,8 +93,10 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, allow_nan=False, indent=2) + '\n', encoding='utf-8')
 
 
-def _answers(session, inputs, curve, method=None, count=None, *, mmr_weight=WEIGHT, attention_normalization='none'):
-    tokens, timing, details = generate(session.model, inputs, GENERATION, SHALLOW,
+def _answers(session, inputs, curve, method=None, count=None, *, mmr_weight=WEIGHT, attention_normalization='none',
+             pruning_layer=None):
+    pruning_layer = SHALLOW if pruning_layer is None else pruning_layer
+    tokens, timing, details = generate(session.model, inputs, GENERATION, pruning_layer,
                                        method=method, curve=curve, count=count, weight=mmr_weight,
                                        attention_normalization=attention_normalization)
     sequences = tokens.tolist()
@@ -112,12 +114,12 @@ def _variants(keep_counts):
     return [(method, count) for count in keep_counts for method in ('raw', 'corrected', 'mmr')]
 
 
-def mmr_sweep_variants(keep_counts, weights):
+def mmr_sweep_variants(keep_counts, weights, *, methods=RAW_MMR_METHODS):
     """Build one raw top-k reference and all MMR/lambda combinations per budget."""
     variants = []
     for keep in keep_counts:
         variants.append(dict(name=f'raw_{keep}', method='raw', keep=keep, mmr_lambda=None, source='current'))
-        for method in RAW_MMR_METHODS:
+        for method in methods:
             for weight in weights:
                 variants.append(dict(name=f'{method}_{keep}_lambda_{weight}', method=method, keep=keep,
                                      mmr_lambda=weight, source='current'))
@@ -134,7 +136,7 @@ def _generation_variants(matrix, weight):
 def _validate_settings(visual_count, layers, calibration_batch, generation_batch, keep_counts, selection_examples,
                        *, required_layer=None):
     required_layer = DEEP if required_layer is None else required_layer
-    if (visual_count < 4 or layers < required_layer or calibration_batch < 1 or generation_batch < 1 or selection_examples < 1
+    if (visual_count < 4 or not 1 <= required_layer <= layers or calibration_batch < 1 or generation_batch < 1 or selection_examples < 1
             or not keep_counts or len(set(keep_counts)) != len(keep_counts)
             or any(type(count) is not int or not 1 <= count < visual_count for count in keep_counts)):
         raise ValueError('Invalid layer, token budget, or sample configuration')
@@ -166,7 +168,7 @@ def _fit_curve(observed, held_out):
 
 
 def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *,
-                    mmr_weight=WEIGHT, attention_normalization='none'):
+                    mmr_weight=WEIGHT, attention_normalization='none', pruning_layer=None):
     inputs = _inputs(session, [row for _, row in batch])
     per_view = session.model.geometry['visual_tokens_per_view']
     camera_count = len(session.model.prompt_camera_order)
@@ -180,7 +182,7 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *
         method, count = variant['method'], variant['keep']
         weight = variant['mmr_lambda'] if variant['mmr_lambda'] is not None else mmr_weight
         answers, selections = _answers(session, inputs, curve, method, count, mmr_weight=weight,
-                                       attention_normalization=attention_normalization)
+                                       attention_normalization=attention_normalization, pruning_layer=pruning_layer)
         for (index, _), sample, result, details in zip(batch, paired, answers, selections, strict=True):
             if details is not None:
                 result['camera_counts'] = np.bincount(np.array(details['picks']) // per_view,
@@ -197,7 +199,7 @@ def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *
 
 
 def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selection_examples, batch_size, *, matrix=None,
-                   mmr_weight=WEIGHT, attention_normalization='none'):
+                   mmr_weight=WEIGHT, attention_normalization='none', pruning_layer=None):
     curve = None if fitted is None else torch.as_tensor(fitted, device=session.device, dtype=torch.float32)
 
     # Warm both cases before comparing timings; rotate execution order across questions.
@@ -211,7 +213,7 @@ def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selecti
         for variant in matrix:
             weight = variant['mmr_lambda'] if variant['mmr_lambda'] is not None else mmr_weight
             _answers(session, warmup, curve, variant['method'], variant['keep'], mmr_weight=weight,
-                     attention_normalization=attention_normalization)
+                     attention_normalization=attention_normalization, pruning_layer=pruning_layer)
     evaluation = iter(evaluation)
     pending = []
     offset = 0
@@ -222,7 +224,8 @@ def _generate_rows(session, evaluation, fitted, warmup_row, keep_counts, selecti
         batch = pending[:batch_size]
         try:
             paired = _generate_batch(session, batch, curve, matrix, offset, selection_examples,
-                                     mmr_weight=mmr_weight, attention_normalization=attention_normalization)
+                                     mmr_weight=mmr_weight, attention_normalization=attention_normalization,
+                                     pruning_layer=pruning_layer)
         except torch.cuda.OutOfMemoryError:
             if session.device.type != 'cuda' or len(batch) == 1:
                 raise
