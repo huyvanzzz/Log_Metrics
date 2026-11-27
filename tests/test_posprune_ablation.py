@@ -68,17 +68,17 @@ def test_attention_mmr_uses_attention_patterns_and_preserves_final_query_relevan
         assert a['picks'][0] == b['picks'][0] and len(set(b['picks'])) == 5
 
 
-@pytest.mark.parametrize(('pruning_layer', 'expected_methods'), [
-    (3, ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr', 'attention_mmr')),
-    (23, ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')),
+@pytest.mark.parametrize(('pruning_layer', 'weights', 'expected_methods'), [
+    (3, (.5, .7, .9), ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr', 'attention_mmr')),
+    (23, (.9,), ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')),
 ])
 def test_lambda_sweep_dispatches_and_reports_all_methods_at_their_own_weights(
-        tmp_path, monkeypatch, pruning_layer, expected_methods):
+        tmp_path, monkeypatch, pruning_layer, weights, expected_methods):
     from smolvlm_attention.posprune_ablation import report, raw_mmr_report, runtime
 
     options = {'methods': expected_methods} if pruning_layer == 23 else {}
-    variants = runtime.mmr_sweep_variants((32,), (.5, .7, .9), **options)
-    assert len(variants) == len({row['name'] for row in variants}) == 1 + 3 * len(expected_methods)
+    variants = runtime.mmr_sweep_variants((32,), weights, **options)
+    assert len(variants) == len({row['name'] for row in variants}) == 1 + len(weights) * len(expected_methods)
     assert variants[0]['name'] == 'raw_32' and variants[0]['mmr_lambda'] is None
     assert tuple(dict.fromkeys(row['method'] for row in variants[1:])) == expected_methods
     session = SimpleNamespace(model=SimpleNamespace(geometry={'visual_tokens_per_view': 64}, prompt_camera_order=CAMERA_ORDER))
@@ -99,7 +99,7 @@ def test_lambda_sweep_dispatches_and_reports_all_methods_at_their_own_weights(
         if method != 'raw':
             assert weight == variant['mmr_lambda']
     config = dict(experiment='raw_mmr', variants=variants, evaluation_ids=['question'], visual_count=384,
-        cameras=CAMERA_ORDER, per_view=64, question_type_distribution=None, mmr_lambdas=[.5, .7, .9])
+        cameras=CAMERA_ORDER, per_view=64, question_type_distribution=None, mmr_lambdas=weights)
     (tmp_path / 'config.json').write_text(json.dumps(config), encoding='utf-8')
     (tmp_path / 'predictions.jsonl').write_text(json.dumps(rows[0]) + '\n', encoding='utf-8')
     metrics = dict.fromkeys(('overall', 'bleu4', 'meteor', 'rouge_l', 'cider', 'yes_no_accuracy'), 1.)
@@ -495,7 +495,7 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
     monkeypatch.setattr(parallel, 'validate_cache', validate)
     monkeypatch.setattr(parallel.subprocess, 'Popen', FakeProcess)
     budgets = (32,) if camera_mmr or deep_sweep else (96, 32) if raw_mmr else (5,)
-    options = dict(pruning_layer=23, mmr_sweep=(.5, .7, .9),
+    options = dict(pruning_layer=23, mmr_sweep=(.9,),
                    mmr_sweep_methods=('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')) if deep_sweep else {}
     output = parallel.run_parallel('checkpoint.pt', tmp_path if mounted else None, tmp_path, tmp_path / 'results',
         cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=budgets,
@@ -518,7 +518,8 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
         assert all(job['calibration'] == [] for job in jobs)
         if deep_sweep:
             assert (config['shallow'], config['pruning_layer_index']) == (23, 22)
-            assert len(config['variants']) == 10 and 'attention_redundancy' not in config
+            assert len(config['variants']) == 4 and 'attention_redundancy' not in config
+            assert config['mmr_lambdas'] == [.9]
             assert all(job['pruning_layer'] == 23 and job['matrix'] == config['variants'] for job in jobs)
         elif camera_mmr:
             assert jobs[0]['matrix'] == [[name, 32] for name in

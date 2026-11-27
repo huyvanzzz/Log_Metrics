@@ -120,4 +120,4 @@ def report_raw_mmr(output, historical=None):
     _csv(output / 'paired_answers.csv', [dict(sample_id=row['sample_id'], question=row['question'],
         question_type=row.get('question_type'), ground_truth=row['ground_truth'],
         **{name: row['variants'][name]['prediction'] for name in sources}) for row in rows])
-    return _plot(differences, output, sweep='mmr_lambdas' in config)
+    return _plot(differences, output, sweep=len(config.get('mmr_lambdas', ())) > 1)

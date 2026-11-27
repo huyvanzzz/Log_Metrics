@@ -54,7 +54,7 @@ The 13 configurations use FP32 greedy decoding and one shared raw top-32 referen
 '''
     if layer_23:
         overview = '''
-# SmolVLM MMR lambda sweep after decoder block 23
+# SmolVLM MMR at 32 visual tokens after decoder block 23
 
 Choose **GPU T4 ×2**, enable Internet, and use **Save & Run All**. The notebook downloads the pinned model and data, then builds shared visual features without a Kaggle Input.
 
@@ -64,16 +64,17 @@ All configurations process the 384 visual tokens through block 23 (`layers[22]`)
 - **Intra-camera MMR** applies the penalty only within the same camera.
 - **Spatial-aware MMR** weights hidden-state cosine by distance on the same camera's 8×8 grid. Cross-camera pairs keep half their cosine.
 
-Each MMR method runs at λ = 0.5, 0.7 and 0.9. The ten configurations use the same 4,204 stratified questions and FP32 greedy decoding. Positional bias calibration is skipped. The report shows quality and latency deltas against the raw top-32 reference run at block 23 and plots Overall score deltas against λ.
+Each MMR method runs at λ = 0.9. The four configurations use the same 4,204 stratified questions and FP32 greedy decoding. Positional bias calibration is skipped. The report shows quality and latency deltas against the raw top-32 reference run at block 23, with a bar chart of Overall score deltas by method.
 '''
     budget = (32,) if sweep else (32, 64)
     settings = 'MMR_LAMBDAS = (0.5, 0.7, 0.9)' if sweep else 'MMR_LAMBDA = 0.9'
     options = 'mmr_sweep=MMR_LAMBDAS' if sweep else 'mmr_weight=MMR_LAMBDA'
     work_folder = 'smolvlm-mmr-sweep-32' if sweep else 'smolvlm-raw-mmr-32-64'
     if layer_23:
-        settings += ('\nPRUNING_LAYER = 23  # One-based decoder block number, index 22.\n'
-                     "MMR_METHODS = ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')")
-        options += ',\n    pruning_layer=PRUNING_LAYER, mmr_sweep_methods=MMR_METHODS'
+        settings = ('MMR_LAMBDA = 0.9\n'
+                    'PRUNING_LAYER = 23  # One-based decoder block number, index 22.\n'
+                    "MMR_METHODS = ('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')")
+        options = 'mmr_sweep=(MMR_LAMBDA,),\n    pruning_layer=PRUNING_LAYER, mmr_sweep_methods=MMR_METHODS'
         work_folder = 'smolvlm-mmr-sweep-layer23-32'
     cells = [
         cell('markdown', overview),
@@ -192,6 +193,6 @@ for path in (output / 'comparison.csv', output / 'mmr_vs_raw.csv', output / 'pai
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--lambda-sweep', action='store_true')
-    parser.add_argument('--layer-23', action='store_true', help='Build the block-23 hidden-state MMR sweep')
+    parser.add_argument('--layer-23', action='store_true', help='Build the block-23 hidden-state MMR notebook')
     args = parser.parse_args()
     main(sweep=args.lambda_sweep, layer_23=args.layer_23)
