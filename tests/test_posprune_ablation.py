@@ -441,12 +441,14 @@ def test_public_image_path_builds_reusable_fp16_features_in_camera_order(tmp_pat
     np.testing.assert_array_equal(features, reference)
 
 
-@pytest.mark.parametrize(('mounted', 'raw_mmr', 'camera_mmr', 'deep_sweep'), [
-    (True, False, False, False), (False, False, False, False), (False, True, False, False),
-    (False, True, True, False), (False, True, False, True),
+@pytest.mark.parametrize(('mounted', 'raw_mmr', 'camera_mmr', 'deep_sweep', 'camera_bias'), [
+    (True, False, False, False, False), (False, False, False, False, False),
+    (False, True, False, False, False), (False, True, True, False, False),
+    (False, True, False, True, False), (False, False, False, False, 'cubic'),
+    (False, False, False, False, 'spline'), (False, False, False, False, 'paired'),
 ])
 def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_path, monkeypatch, mounted, raw_mmr,
-                                                                        camera_mmr, deep_sweep):
+                                                                        camera_mmr, deep_sweep, camera_bias):
     from pathlib import Path
     from smolvlm_attention.posprune_ablation import parallel
 
@@ -475,9 +477,12 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
             self.done = False
             if self.job['features'] is not None:
                 parallel._json_write(self.folder / 'features_ready.json', True)
-            parallel._json_write(self.folder / 'prefill.json', dict(
+            stats = dict(
                 session=dict(device=f'cuda:{rank}', camera_order=CAMERA_ORDER, visual_tokens=24), per_view=4,
-                gpu='T4 fixture', observed=[float(rank + 1)] * 24, held_out=[float(rank + 1)] * 24))
+                gpu='T4 fixture', observed=[float(rank + 1)] * 24, held_out=[float(rank + 1)] * 24)
+            if self.job['predictor']:
+                stats['recording_means'] = [[1.5] * 24, [1.5] * 24]
+            parallel._json_write(self.folder / 'prefill.json', stats)
 
         def poll(self):
             if self.bias.exists() and not self.done:
@@ -497,11 +502,27 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
     budgets = (32,) if camera_mmr or deep_sweep else (96, 32) if raw_mmr else (5,)
     options = dict(pruning_layer=23, mmr_sweep=(.9,),
                    mmr_sweep_methods=('raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')) if deep_sweep else {}
-    output = parallel.run_parallel('checkpoint.pt', tmp_path if mounted else None, tmp_path, tmp_path / 'results',
+    if camera_bias:
+        options['camera_bias_layers'] = (2, 23)
+        budgets = (32, 64)
+    if camera_bias == 'spline':
+        options['spline_smoothing'] = dict.fromkeys(CAMERA_ORDER, .01)
+    checkpoint = 'checkpoint.pt'
+    if camera_bias == 'paired':
+        checkpoint = tmp_path / checkpoint
+        checkpoint.write_bytes(b'base')
+        predictor = tmp_path / 'predictor.pt'
+        predictor.write_bytes(b'predictor')
+        for split in ('train', 'val', 'test'):
+            (tmp_path / f'{split}.jsonl').write_text('', encoding='utf-8')
+        options.update(camera_bias_layers=(3, 23), predictor_checkpoint=predictor)
+        budgets = (32,)
+    output = parallel.run_parallel(checkpoint, tmp_path if mounted else None, tmp_path, tmp_path / 'results',
         cache_fingerprint='expected', camera_order=CAMERA_ORDER, keep_counts=budgets,
         raw_mmr=raw_mmr, reuse_raw_96=raw_mmr and not (camera_mmr or deep_sweep),
         expected_evaluation_ids=list('34567'), camera_mmr=camera_mmr,
-        mmr_weight=.75 if camera_mmr else .9, attention_normalization='minmax' if camera_mmr or deep_sweep else 'none',
+        mmr_weight=.75 if camera_mmr else .9,
+        attention_normalization='minmax' if camera_mmr or deep_sweep or camera_bias else 'none',
         **options)
     assert validations == (['expected'] if mounted else [])
     config = parallel._read(output / 'config.json')
@@ -529,7 +550,55 @@ def test_two_gpu_coordination_fits_one_weighted_curve_and_merges_in_order(tmp_pa
         else:
             assert jobs[0]['matrix'] == [['raw_mmr', 96], ['raw', 32], ['raw_mmr', 32]]
     else:
-        assert parallel._read(output / 'bias_curve.json')['fitted'] == pytest.approx([4 / 3] * 24)
-        assert parallel._read(output / 'bias_curve.json')['evaluation_observed'] == pytest.approx([1.4] * 24)
+        curve = parallel._read(output / 'bias_curve.json')
+        assert curve['fitted'] == pytest.approx([1.5 if camera_bias == 'paired' else 4 / 3] * 24)
+        assert curve['evaluation_observed'] == pytest.approx([1.4] * 24)
+        if camera_bias == 'paired':
+            assert (config['shallow'], config['deep'], config['pruning_layer_index']) == (3, 23, 2)
+            assert config['experiment'] == 'spline_vs_predictor' and curve['fit_method'] == 'smoothing_spline'
+            assert [v['name'] for v in config['variants']] == ['mmr_32', 'predictor_mmr_32']
+            assert sorted(i for group in config['spline_cv_group_ids'] for i in group) == list('012')
+            assert all(job['predictor']['sha256'] == config['predictor_sha256'] for job in jobs)
+        elif camera_bias:
+            assert (config['shallow'], config['deep'], config['pruning_layer_index']) == (2, 23, 1)
+            assert [(v['method'], v['keep']) for v in config['variants']] == [
+                (method, keep) for keep in (32, 64) for method in ('raw', 'corrected', 'mmr', 'raw_mmr')]
+            assert all(job['pruning_layer'] == 2 and job['calibration_layers'] == [2, 23] for job in jobs)
+            assert [fit['camera'] for fit in curve['camera_fits']] == CAMERA_ORDER
+            if camera_bias == 'spline':
+                assert config['bias_fit'] == 'per_camera_smoothing_spline'
+                assert config['spline_smoothing'] == options['spline_smoothing']
+                assert curve['fit_method'] == 'smoothing_spline'
     assert [json.loads(line)['sample_id'] for line in (output / 'predictions.jsonl').read_text().splitlines()] == list('34567')
     assert parallel._read(output / 'parallel_timing.json')['workers'] == 2
+
+
+def test_camera_cubics_reset_positions_and_fit_only_validation():
+    from smolvlm_attention.posprune_ablation.runtime import _fit_camera_curves
+
+    x = np.linspace(0, 1, 64)
+    calibration = np.concatenate([i + (i + 1) * x ** 3 for i in range(len(CAMERA_ORDER))])
+    result = _fit_camera_curves(calibration, calibration + .5, CAMERA_ORDER, 64)
+    np.testing.assert_allclose(result['fitted'], calibration, atol=1e-12)
+    assert result['normalized_local_positions'] == pytest.approx(x)
+    for i, fit in enumerate(result['camera_fits']):
+        assert fit['first_visual_index'] == i * 64
+        assert fit['coefficients'] == pytest.approx([i, 0, 0, i + 1])
+        assert fit['held_out_rmse'] == pytest.approx(.5)
+
+
+def test_camera_splines_keep_a_local_dip_and_use_camera_specific_smoothing():
+    from smolvlm_attention.posprune_ablation.runtime import _fit_camera_curves
+
+    trend = np.arange(64) / 1000
+    observed = trend.copy()
+    observed[36] -= .1
+    camera_order = ['Front', 'Back']
+    calibration = np.concatenate([observed, observed])
+    fit = _fit_camera_curves(calibration, calibration + .015, camera_order, 64,
+                             spline_smoothing={'Front': .01, 'Back': 1000.})
+    fit_with_other_test = _fit_camera_curves(calibration, calibration, camera_order, 64,
+                                            spline_smoothing={'Front': .01, 'Back': 1000.})
+    assert fit['fitted'] == fit_with_other_test['fitted']
+    strong_dip, smooth_dip = np.asarray(fit['fitted']).reshape(2, 64)[:, 36]
+    assert abs(strong_dip - observed[36]) < abs(smooth_dip - observed[36])

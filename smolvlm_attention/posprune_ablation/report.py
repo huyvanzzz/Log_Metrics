@@ -60,6 +60,9 @@ def _selection_rows(rows, config):
     if side ** 2 != per_view:
         raise ValueError('Selection report requires square camera token grids')
     selections = []
+    predictor_comparison = config.get('experiment') == 'spline_vs_predictor'
+    first_method, second_method = ('mmr', 'predictor_mmr') if predictor_comparison else ('raw', 'corrected')
+    first_only, second_only = ('spline only', 'MLP only') if predictor_comparison else ('raw only', 'corrected only')
     for row in rows:
         sample = row['variants']
         for variant in config['variants']:
@@ -67,30 +70,36 @@ def _selection_rows(rows, config):
             if selected is None:
                 continue
             count = variant['keep']
-            raw = set(sample[f'raw_{count}']['selection']['picks'])
-            corrected = set(sample[f'corrected_{count}']['selection']['picks'])
+            first = set(sample[f'{first_method}_{count}']['selection']['picks'])
+            second = set(sample[f'{second_method}_{count}']['selection']['picks'])
             for rank, index in enumerate(selected['picks'], 1):
                 camera, local = divmod(index, per_view)
                 grid_row, grid_col = divmod(local, side)
-                membership = ('both' if index in raw and index in corrected else 'raw only' if index in raw
-                              else 'corrected only' if index in corrected else 'neither')
-                selections.append(dict(sample_id=row['sample_id'], variant=variant['name'], keep=count,
+                membership = ('both' if index in first and index in second else first_only if index in first
+                              else second_only if index in second else 'neither')
+                selection = dict(sample_id=row['sample_id'], variant=variant['name'], keep=count,
                     selection_rank=rank, visual_index=index, camera=config['cameras'][camera],
-                    grid_row=grid_row, grid_col=grid_col, raw_score=selected['raw'][index],
-                    corrected_score=selected['corrected'][index], top_k_membership=membership,
-                    max_cosine=None if selected['penalties'] is None or rank == 1 else selected['penalties'][rank - 1]))
+                    grid_row=grid_row, grid_col=grid_col,
+                    raw_score=None if selected['raw'] is None else selected['raw'][index],
+                    corrected_score=None if selected['corrected'] is None else selected['corrected'][index],
+                    top_k_membership=membership,
+                    max_cosine=None if selected['penalties'] is None or rank == 1 else selected['penalties'][rank - 1])
+                if predictor_comparison:
+                    selection['relevance'] = selected['relevance'][index]
+                selections.append(selection)
     return selections
 
 
 def _summarize(rows, config):
-    raw_mmr = config.get('experiment') == 'raw_mmr'
-    names = {} if raw_mmr else {'baseline': config['visual_count']}
+    matched_raw = config.get('experiment') in ('raw_mmr', 'camera_posprune')
+    predictor_comparison = config.get('experiment') == 'spline_vs_predictor'
+    names = {} if matched_raw or predictor_comparison else {'baseline': config['visual_count']}
     names.update({v['name']: v['keep'] for v in config['variants']})
     quality = _quality(rows, names)
     batches = {row.get('batch_id', i): row for i, row in enumerate(rows)}
     summary = []
     for name, count in names.items():
-        reference = f'raw_{count}' if raw_mmr else 'baseline'
+        reference = f'mmr_{count}' if predictor_comparison else f'raw_{count}' if matched_raw else 'baseline'
         samples = [row['variants'][name] for row in rows]
         batch_results = [row['variants'][name] for row in batches.values()]
         first_steps = [result.get('first_token_step_ms', result.get('first_beam_step_ms')) for result in batch_results]
@@ -124,7 +133,13 @@ def _bias_figures(config, curve, output):
     fitted = np.asarray(curve['fitted'])
     fig, ax = plt.subplots(figsize=(11, 4.6), layout='constrained')
     ax.plot(curve['calibration_observed'], color='#4677a2', lw=.9, label='Calibration mean')
-    ax.plot(fitted, color='#c36719', lw=2.1, label='Cubic fit')
+    camera_fits = curve.get('camera_fits')
+    fit_label = 'Smoothing spline' if curve.get('fit_method') == 'smoothing_spline' else 'Cubic fit'
+    segments = range(0, len(fitted), per_view) if camera_fits else (0,)
+    for start in segments:
+        stop = start + per_view if camera_fits else len(fitted)
+        ax.plot(np.arange(start, stop), fitted[start:stop], color='#c36719', lw=2.1,
+                label=fit_label if start == 0 else None)
     for boundary in range(per_view, len(fitted), per_view):
         ax.axvline(boundary - .5, color='0.8', lw=.7)
     ax.set(title='Positional Bias Fitting Function', xlabel='Original visual index (zero-based)',
@@ -132,6 +147,23 @@ def _bias_figures(config, curve, output):
     ax.secondary_xaxis('top').set_xticks(np.arange(len(cameras)) * per_view + (per_view - 1) / 2, cameras)
     ax.legend()
     paths = _export(fig, output, 'positional_bias_fit', 180)
+    if camera_fits:
+        fig, axes = plt.subplots((len(cameras) + 2) // 3, 3, figsize=(12, 6.5), sharex=True, sharey=True,
+                                 squeeze=False, layout='constrained')
+        for camera, ax in zip(camera_fits, axes.flat):
+            start = camera['first_visual_index']
+            segment = slice(start, start + per_view)
+            ax.plot(curve['calibration_observed'][segment], color='#4677a2', lw=.9, label='Calibration mean')
+            ax.plot(curve['evaluation_observed'][segment], color='0.45', lw=.8, linestyle='--', label='Held-out mean')
+            ax.plot(fitted[segment], color='#c36719', lw=1.8, label=fit_label)
+            ax.set_title(camera['camera'])
+        for ax in list(axes.flat)[len(cameras):]:
+            ax.set_visible(False)
+        handles, labels = axes.flat[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='outside upper center', ncol=3)
+        fig.supxlabel('Camera-local visual index (zero-based)')
+        fig.supylabel(f'Attention difference (layer {config["shallow"]} − layer {config["deep"]})')
+        paths += _export(fig, output, 'positional_bias_fit_by_camera', 180)
 
     fig, ax = plt.subplots(figsize=(10, 4.8), layout='constrained')
     residuals = (np.asarray(curve['evaluation_observed']) - fitted).reshape(len(cameras), per_view)
@@ -146,19 +178,27 @@ def _selection_figure(selections, config, output):
     first = selections[0]['sample_id']
     example = [row for row in selections if row['sample_id'] == first]
     budgets = sorted({row['keep'] for row in example}, reverse=True)
-    colors = {'both': '#366e57', 'raw only': '#4677a2', 'corrected only': '#c36719', 'neither': '#8a7aab'}
+    predictor_comparison = config.get('experiment') == 'spline_vs_predictor'
+    first_only, second_only = ('spline only', 'MLP only') if predictor_comparison else ('raw only', 'corrected only')
+    colors = {'both': '#366e57', first_only: '#4677a2', second_only: '#c36719', 'neither': '#8a7aab'}
     fig, axes = plt.subplots(len(budgets), 1, figsize=(11, 2.7 * len(budgets) + 1),
                              sharex=True, squeeze=False, layout='constrained')
-    labels = ['Raw attention', 'Corrected attention', 'Corrected + MMR']
+    method_labels = dict(raw='Raw attention', corrected='Corrected attention', mmr='Corrected + MMR',
+                         raw_mmr='Raw + MMR', predictor_mmr='MLP + MMR')
+    if predictor_comparison:
+        method_labels['mmr'] = 'Spline + MMR'
+    methods = tuple(dict.fromkeys(variant['method'] for variant in config['variants']))
+    labels = [method_labels[method] for method in methods]
     for budget, ax in zip(budgets, axes[:, 0]):
-        for y, method in enumerate(('raw', 'corrected', 'mmr')):
+        for y, method in enumerate(methods):
             picks = [row for row in example if row['variant'] == f'{method}_{budget}']
             for code, color in colors.items():
                 indices = [row['visual_index'] for row in picks if row['top_k_membership'] == code]
                 ax.scatter(indices, [y] * len(indices), s=13, color=color)
         for boundary in range(config['per_view'], config['visual_count'], config['per_view']):
             ax.axvline(boundary - .5, color='0.8', lw=.7, zorder=0)
-        ax.set(yticks=[0, 1, 2], yticklabels=labels, ylim=(-.5, 2.5), title=f'Keep {budget} visual tokens')
+        ax.set(yticks=range(len(methods)), yticklabels=labels, ylim=(-.5, len(methods) - .5),
+               title=f'Keep {budget} visual tokens')
     legend = [Line2D([], [], marker='o', linestyle='none', color=color, label=code.capitalize())
               for code, color in colors.items()]
     fig.legend(handles=legend, ncol=len(colors), loc='outside lower center')
@@ -169,20 +209,25 @@ def _selection_figure(selections, config, output):
     return _export(fig, output, 'indexed_token_selections', 180)
 
 
-def _comparison_figure(summary, output):
+def _comparison_figure(summary, output, *, matched_raw=False, predictor_comparison=False):
     fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True, layout='constrained')
     labels = [row['variant'].replace('_', '\n') for row in summary]
-    colors = {'baseline': '#555555', 'raw': '#4677a2', 'corrected': '#c36719', 'mmr': '#267862'}
+    colors = {'baseline': '#555555', 'raw': '#4677a2', 'corrected': '#c36719', 'mmr': '#267862', 'raw_mmr': '#8a7aab'}
+    if predictor_comparison:
+        labels = ['Spline + MMR', 'MLP + MMR']
+        colors['predictor_mmr'] = '#8a7aab'
     for ax, key, title in zip(axes, ('delta_overall', 'median_first_token_step_ms', 'median_latency_ms'),
             ('Change in Overall', 'First token step\nbatch median (ms)', 'Generation time\nbatch median (ms)')):
-        baseline = summary[0][key]
+        baseline = (0 if key == 'delta_overall' else None) if matched_raw else summary[0][key]
         ax.bar(labels, [np.nan if row[key] is None else row[key] for row in summary],
-               color=[colors[row['variant'].split('_')[0]] for row in summary])
+               color=[colors[row['variant'].rsplit('_', 1)[0]] for row in summary])
         if baseline is not None:
             ax.axhline(baseline, color='0.35', linestyle='--', lw=1)
         ax.set_ylabel(title)
-    fig.suptitle('Unpruned baseline and matched-budget pruning variants')
-    return _export(fig, output, 'baseline_vs_pruned', 180)
+    fig.suptitle('Spline and MLP, both using MMR at 32 tokens' if predictor_comparison else
+                 'Pruning variants with matched-budget raw references' if matched_raw else
+                 'Unpruned baseline and matched-budget pruning variants')
+    return _export(fig, output, 'pruning_comparison' if matched_raw or predictor_comparison else 'baseline_vs_pruned', 180)
 
 
 def report(output):
@@ -206,6 +251,12 @@ def report(output):
                         **{result['variant']: row['variants'][result['variant']]['prediction'] for result in summary})
                    for row in rows]
     _csv(output / 'paired_answers.csv', predictions)
+    if 'camera_fits' in curve:
+        columns = ['camera', 'held_out_rmse', 'global_fit_held_out_rmse']
+        if curve.get('fit_method') == 'smoothing_spline':
+            columns.extend(('spline_smoothing', 'per_camera_cubic_held_out_rmse'))
+        _csv(output / 'camera_fit_metrics.csv', [{key: fit[key] for key in columns} for fit in curve['camera_fits']])
     with plt.rc_context(_STYLE):
         return (_bias_figures(config, curve, output) + _selection_figure(selections, config, output)
-                + _comparison_figure(summary, output))
+                + _comparison_figure(summary, output, matched_raw=config.get('experiment') == 'camera_posprune',
+                                     predictor_comparison=config.get('experiment') == 'spline_vs_predictor'))

@@ -14,6 +14,7 @@ from smolvlm_attention.collector import _prepare
 
 RAW_METHODS = ('raw', 'raw_mmr', 'intra_camera_mmr', 'spatial_aware_mmr')
 RAW_MMR_METHODS = (*RAW_METHODS[1:], 'attention_mmr')
+PREDICTOR_METHOD = 'predictor_mmr'
 ATTENTION_QUERY_LIMIT = 16
 SPATIAL_ALPHA = 0.5
 SPATIAL_SIGMA = 2.0
@@ -147,7 +148,7 @@ def incoming_visual_attention(attn, kwargs, valid, last, visual, query_limit=ATT
 
 class _PrunePrompt:
     def __init__(self, inputs, image_id, visual_count, curve, count, method, weight, per_view,
-                 attention_normalization='none'):
+                 attention_normalization='none', predictor=None):
         ids, mask = inputs['input_ids'], inputs['attention_mask']
         self.valid = mask.bool()
         if not bool(self.valid[:, -1].all()) or bool((self.valid[:, :-1] & ~self.valid[:, 1:]).any()):
@@ -164,6 +165,9 @@ class _PrunePrompt:
         self.curve, self.count, self.method, self.weight = curve, count, method, weight
         self.per_view = per_view
         self.attention_normalization = attention_normalization
+        self.predictor = predictor
+        if method == PREDICTOR_METHOD:
+            self.positions = self.valid.long().cumsum(dim=1) - 1
         self.raw = self.corrected = self.picks = self.penalties = self.kept = None
         self.prefill_mask = None
 
@@ -181,15 +185,22 @@ class _PrunePrompt:
         if self.kept is not None:
             return
         hidden = outputs[0]
-        relevance = self.corrected if self.method in ('corrected', 'mmr') else self.raw
-        if self.method in RAW_MMR_METHODS and self.attention_normalization == 'minmax':
+        if self.method == PREDICTOR_METHOD:
+            features = _gather_rows(hidden, self.visual)
+            query = self.last[:, None]
+            relevance = self.predictor(features, _gather_rows(hidden, query), self.positions.gather(1, self.visual),
+                                       self.positions.gather(1, query)).exp()
+        else:
+            relevance = self.corrected if self.method in ('corrected', 'mmr') else self.raw
+        if self.attention_normalization == 'minmax' and self.method in (*RAW_MMR_METHODS, 'mmr', PREDICTOR_METHOD):
             relevance = minmax_attention(relevance)
         self.relevance = relevance
         if self.method in ('raw', 'corrected'):
             self.picks = topk(relevance, self.count)
         else:
-            features = (self.patterns if self.method == 'attention_mmr'
-                        else _gather_rows(hidden[:len(self.visual)], self.visual))
+            if self.method != PREDICTOR_METHOD:
+                features = (self.patterns if self.method == 'attention_mmr'
+                            else _gather_rows(hidden[:len(self.visual)], self.visual))
             self.picks, self.penalties = mmr(relevance, features, self.count, self.weight,
                                             method=self.method, per_view=self.per_view)
         keep = torch.ones_like(self.valid)
@@ -226,8 +237,9 @@ class _PrunePrompt:
 
     def install(self, layers, shallow, hooks):
         layer = layers[shallow - 1]
-        handles = [layer.self_attn.register_forward_pre_hook(self.capture, with_kwargs=True),
-                   layer.register_forward_hook(self.prune)]
+        handles = [layer.register_forward_hook(self.prune)]
+        if self.method != PREDICTOR_METHOD:
+            handles.append(layer.self_attn.register_forward_pre_hook(self.capture, with_kwargs=True))
         handles.extend(layer.register_forward_pre_hook(self.adjust, with_kwargs=True) for layer in layers[shallow:])
         for handle in handles:
             hooks.callback(handle.remove)
@@ -235,9 +247,10 @@ class _PrunePrompt:
     def details(self):
         penalties = [None] * len(self.picks) if self.penalties is None else self.penalties.tolist()
         corrected = [None] * len(self.picks) if self.corrected is None else self.corrected.tolist()
+        raw = [None] * len(self.picks) if self.raw is None else self.raw.tolist()
         return [dict(picks=picks, raw=raw, corrected=corrected, relevance=relevance, penalties=penalty)
                 for picks, raw, corrected, relevance, penalty in
-                zip(self.picks.tolist(), self.raw.tolist(), corrected, self.relevance.tolist(), penalties)]
+                zip(self.picks.tolist(), raw, corrected, self.relevance.tolist(), penalties)]
 
 
 class _FirstTokenStep(StoppingCriteria):
@@ -263,10 +276,12 @@ class _FirstTokenStep(StoppingCriteria):
 
 @torch.inference_mode()
 def generate(model, inputs, generation, shallow, *, method=None, curve=None, count=None, weight=0.9,
-             attention_normalization='none'):
+             attention_normalization='none', predictor=None):
     """Run the stock cached generation path, optionally pruning after layer `shallow`."""
-    if method not in (None, 'corrected', 'mmr', 'raw', *RAW_MMR_METHODS):
+    if method not in (None, 'corrected', 'mmr', 'raw', *RAW_MMR_METHODS, PREDICTOR_METHOD):
         raise ValueError(f'Unknown pruning method {method!r}')
+    if method == PREDICTOR_METHOD and (predictor is None or shallow != 3 or generation.get('num_beams', 1) != 1):
+        raise ValueError('The after2 predictor requires its trained checkpoint, layer index 2 and single-beam decoding')
     if attention_normalization not in ('none', 'minmax'):
         raise ValueError('Attention normalization must be none or minmax')
     if method is not None and len(inputs['input_ids']) > 1:
@@ -283,7 +298,7 @@ def generate(model, inputs, generation, shallow, *, method=None, curve=None, cou
         if method is not None:
             state = _PrunePrompt(inputs, model.native.config.image_token_id, model.visual_token_len,
                                  curve, count, method, weight, model.geometry['visual_tokens_per_view'],
-                                 attention_normalization)
+                                 attention_normalization, predictor)
             state.install(model.native.model.text_model.layers, shallow, hooks)
         tokens = model.generate_from_features(**inputs, **generation, stopping_criteria=[timer])
         end = timer.mark()

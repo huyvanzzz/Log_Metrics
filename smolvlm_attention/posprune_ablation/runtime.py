@@ -11,7 +11,7 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_inference.cache import record_key, records
-from .decoder import RAW_MMR_METHODS, attention_difference, generate
+from .decoder import PREDICTOR_METHOD, RAW_MMR_METHODS, attention_difference, generate
 from .selection import stratified_test
 
 
@@ -80,11 +80,12 @@ def _inputs(session, rows):
                 visual_features=batch['visual_features'].to(session.device, dtype=torch.float32))
 
 
-def _mean_difference(session, rows, batch_size, name):
+def _mean_difference(session, rows, batch_size, name, *, layers=None):
+    shallow, deep = (SHALLOW, DEEP) if layers is None else layers
     total = np.zeros(session.model.visual_token_len, dtype=np.float64)
     for start in tqdm(range(0, len(rows), batch_size), desc=name, unit='batch'):
         inputs = _inputs(session, rows[start:start + batch_size])
-        values = attention_difference(session.model, inputs, SHALLOW, DEEP)
+        values = attention_difference(session.model, inputs, shallow, deep)
         total += values.sum(axis=0, dtype=np.float64)
     return total / len(rows) if rows else total
 
@@ -96,9 +97,10 @@ def _write_json(path, payload):
 def _answers(session, inputs, curve, method=None, count=None, *, mmr_weight=WEIGHT, attention_normalization='none',
              pruning_layer=None):
     pruning_layer = SHALLOW if pruning_layer is None else pruning_layer
+    predictor_options = {'predictor': session.predictor} if method == PREDICTOR_METHOD else {}
     tokens, timing, details = generate(session.model, inputs, GENERATION, pruning_layer,
                                        method=method, curve=curve, count=count, weight=mmr_weight,
-                                       attention_normalization=attention_normalization)
+                                       attention_normalization=attention_normalization, **predictor_options)
     sequences = tokens.tolist()
     predictions = session.processor.tokenizer.batch_decode(sequences, skip_special_tokens=True)
     eos = session.model.native.generation_config.eos_token_id
@@ -165,6 +167,66 @@ def _fit_curve(observed, held_out):
     return dict(degree=3, coefficients=polynomial.coef.tolist(), normalized_positions=position.tolist(),
                 calibration_observed=observed.tolist(), fitted=polynomial(position).tolist(),
                 evaluation_observed=held_out.tolist())
+
+
+def _spline_at_positions(observed, smoothing):
+    """Fit a natural cubic smoothing spline at unit-spaced token positions."""
+    size = len(observed)
+    second_difference = np.diff(np.eye(size), n=2, axis=0)
+    # Integrating the interpolant's squared curvature gives this penalty on knot values.
+    curvature = np.eye(size - 2) * (2 / 3) + (np.eye(size - 2, k=1) + np.eye(size - 2, k=-1)) / 6
+    penalty = second_difference.T @ np.linalg.solve(curvature, second_difference)
+    return np.linalg.solve(np.eye(size) + smoothing * penalty, observed)
+
+
+def _choose_spline_smoothing(group_means, counts, cameras, per_view):
+    """Choose per-camera smoothing by cross-predicting two disjoint validation recordings sets."""
+    candidates = (.001, .01, .1, .3, 1., 3., 10., 30., 100., 1000., 10000.)
+    means = np.asarray(group_means).reshape(2, len(cameras), per_view)
+    weights = {}
+    for i, camera in enumerate(cameras):
+        def error(smoothing):
+            estimate_a = _spline_at_positions(means[0, i], smoothing)
+            estimate_b = _spline_at_positions(means[1, i], smoothing)
+            losses = [np.mean((estimate_a - means[1, i]) ** 2), np.mean((estimate_b - means[0, i]) ** 2)]
+            return np.average(losses, weights=counts[::-1])
+
+        weights[camera] = min(candidates, key=error)
+    return weights
+
+
+def _fit_camera_curves(observed, held_out, cameras, per_view, *, spline_smoothing=None):
+    """Fit each camera on validation means and reassemble in prompt order."""
+    if not cameras or per_view < 4 or len(observed) != len(cameras) * per_view or observed.shape != held_out.shape:
+        raise ValueError('Camera bias fitting requires complete, matching camera grids')
+    global_fit = np.asarray(_fit_curve(observed, held_out)['fitted'])
+    result = dict(degree=3, calibration_observed=observed.tolist(), evaluation_observed=held_out.tolist(),
+                  fitted=[], camera_fits=[], normalized_local_positions=np.linspace(0, 1, per_view).tolist())
+    if spline_smoothing is not None:
+        if set(spline_smoothing) != set(cameras):
+            raise ValueError('Supply one spline smoothing parameter per camera')
+        result.update(fit_method='smoothing_spline', spline_knot_spacing=1)
+    for index, camera in enumerate(cameras):
+        start = index * per_view
+        stop = start + per_view
+        local = _fit_curve(observed[start:stop], held_out[start:stop])
+        local_cubic = local['fitted']
+        fit = dict(camera=camera, first_visual_index=start)
+        if spline_smoothing is None:
+            fitted = local_cubic
+            fit['coefficients'] = local['coefficients']
+        else:
+            smoothing = spline_smoothing[camera]
+            if not np.isfinite(smoothing) or smoothing <= 0:
+                raise ValueError('Spline smoothing parameters must be finite and positive')
+            fitted = _spline_at_positions(observed[start:stop], smoothing).tolist()
+            fit.update(spline_smoothing=smoothing, per_camera_cubic_held_out_rmse=float(
+                np.sqrt(np.mean(np.square(held_out[start:stop] - local_cubic)))))
+        fit.update(held_out_rmse=float(np.sqrt(np.mean(np.square(held_out[start:stop] - fitted)))),
+                   global_fit_held_out_rmse=float(np.sqrt(np.mean(np.square(held_out[start:stop] - global_fit[start:stop])))))
+        result['fitted'].extend(fitted)
+        result['camera_fits'].append(fit)
+    return result
 
 
 def _generate_batch(session, batch, curve, matrix, offset, selection_examples, *,

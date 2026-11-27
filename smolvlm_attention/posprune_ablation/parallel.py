@@ -14,14 +14,15 @@ import torch
 from tqdm.auto import tqdm
 
 from smolvlm_attention.data import IDENTITY_KEYS, _json_write, open_validated_cache, validate_cache
-from smolvlm_inference.cache import CAMERA_ORDER
+from smolvlm_inference.cache import CAMERA_ORDER, digest
 from smolvlm_inference.model import load_model, processor_policy
 from smolvlm_inference.session import InferenceSession
 from smolvlm_inference.text import CachedBatchCollator
-from .decoder import ATTENTION_QUERY_LIMIT, RAW_METHODS, RAW_MMR_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
+from .decoder import ATTENTION_QUERY_LIMIT, PREDICTOR_METHOD, RAW_METHODS, RAW_MMR_METHODS, SPATIAL_ALPHA, SPATIAL_SIGMA
 from .image_features import IMAGE_SOURCE, build_frames, frame_plan, image_cache
-from .runtime import (GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _config, _fit_curve, _generate_rows,
-                      _mean_difference, _validate_settings, mmr_sweep_variants, select_evaluation, select_rows)
+from .runtime import (DEEP, GENERATION, GENERATION_BATCH, KEEP_COUNTS, SHALLOW, WEIGHT, _choose_spline_smoothing,
+                      _config, _fit_camera_curves, _fit_curve, _generate_rows, _mean_difference, _validate_settings,
+                      mmr_sweep_variants, select_evaluation, select_rows)
 from .selection import stratified_subset
 
 
@@ -60,10 +61,17 @@ def _worker(folder):
     count = model.visual_token_len
     matrix = job['matrix']
     pruning_layer = job['pruning_layer']
+    calibration_layers = job['calibration_layers']
     _validate_settings(count, len(model.native.model.text_model.layers), job['calibration_batch'],
                        job['generation_batch'], job['keep_counts'], job['selection_examples'],
-                       required_layer=pruning_layer if matrix is not None else None)
+                       required_layer=calibration_layers[-1] if calibration_layers else pruning_layer)
     calibration, evaluation = job['calibration'], job['evaluation']
+    predictor = job.get('predictor')
+    if predictor is not None:
+        from .predictor import load_after2_predictor
+
+        session.predictor = load_after2_predictor(predictor['path'], model, predictor['base_sha256'],
+                                                  predictor['prepared_hashes'], session.device)
     print(f'{session.device} · {torch.cuda.get_device_name(session.device)}', flush=True)
     if features is not None:
         build_frames(model, features['frames'][job['rank']::features['workers']], features['directory'])
@@ -72,15 +80,23 @@ def _worker(folder):
             sleep(.4)
     stats = dict(session=session.describe(), gpu=torch.cuda.get_device_name(session.device),
                  per_view=model.geometry['visual_tokens_per_view'])
-    if matrix is None:
-        observed = _mean_difference(session, calibration, job['calibration_batch'], 'Calibration prefill')
-        held_out = _mean_difference(session, [row for _, row in evaluation], job['calibration_batch'], 'Held-out prefill')
-        stats.update(observed=observed.tolist(), held_out=held_out.tolist())
+    if calibration_layers:
+        if predictor is None:
+            observed = _mean_difference(session, calibration, job['calibration_batch'], 'Calibration prefill',
+                                        layers=calibration_layers)
+            stats['observed'] = observed.tolist()
+        else:
+            stats['recording_means'] = [_mean_difference(session, group, job['calibration_batch'],
+                f'Calibration group {i + 1}', layers=calibration_layers).tolist()
+                for i, group in enumerate(job['recording_groups'])]
+        held_out = _mean_difference(session, [row for _, row in evaluation], job['calibration_batch'], 'Held-out prefill',
+                                    layers=calibration_layers)
+        stats['held_out'] = held_out.tolist()
     _json_write(folder / 'prefill.json', stats)
-    release = folder.parent.parent / ('bias_curve.json' if matrix is None else 'generation_ready.json')
+    release = folder.parent.parent / ('bias_curve.json' if calibration_layers else 'generation_ready.json')
     while not release.is_file():
         sleep(.4)
-    fitted = _read(release)['fitted'] if matrix is None else None
+    fitted = _read(release)['fitted'] if calibration_layers else None
     rows = _generate_rows(session, evaluation, fitted, job['warmup'], job['keep_counts'],
                           job['selection_examples'], job['generation_batch'], matrix=matrix,
                           mmr_weight=job['mmr_weight'], attention_normalization=job['attention_normalization'],
@@ -138,7 +154,8 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                  generation_batch=GENERATION_BATCH, keep_counts=KEEP_COUNTS, seed=42, selection_examples=3,
                  raw_mmr=False, reuse_raw_96=False, expected_evaluation_ids=None, camera_mmr=False,
                  mmr_weight=WEIGHT, attention_normalization='none', evaluation_subset_size=None, mmr_sweep=None,
-                 pruning_layer=SHALLOW, mmr_sweep_methods=None):
+                 pruning_layer=SHALLOW, mmr_sweep_methods=None, camera_bias_layers=None, spline_smoothing=None,
+                 predictor_checkpoint=None):
     """Shard questions across GPUs and publish one fitted curve and one paired result."""
     if gpu_count < 1 or gpu_count > torch.cuda.device_count():
         raise ValueError(f'Requested {gpu_count} GPUs, found {torch.cuda.device_count()}')
@@ -148,6 +165,25 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         raise ValueError('The pruning layer must be a positive one-based decoder block number')
     if pruning_layer != SHALLOW and (not raw_mmr or reuse_raw_96):
         raise ValueError('A different pruning layer requires raw MMR and a current top-k reference')
+    calibration_layers = None if raw_mmr else (SHALLOW, DEEP)
+    predictor = None
+    if predictor_checkpoint is not None:
+        if (raw_mmr or camera_bias_layers != (3, 23) or spline_smoothing is not None or
+                tuple(keep_counts) != (32,) or mmr_weight != .9 or attention_normalization != 'minmax'):
+            raise ValueError('The paired predictor run requires recording-tuned splines on layers 3/23 and MMR 32 at 0.9')
+        path = Path(predictor_checkpoint).resolve(strict=True)
+        predictor = dict(path=str(path), sha256=digest(path), base_sha256=digest(Path(checkpoint)),
+                         prepared_hashes={name: digest(Path(prepared) / name)
+                                          for name in ('train.jsonl', 'val.jsonl', 'test.jsonl')})
+    if spline_smoothing is not None and (camera_bias_layers is None or set(spline_smoothing) != set(camera_order)
+            or any(not np.isfinite(weight) or weight <= 0 for weight in spline_smoothing.values())):
+        raise ValueError('Spline fitting requires per-camera calibration and one positive parameter per camera')
+    if camera_bias_layers is not None:
+        shallow, deep = camera_bias_layers
+        if raw_mmr or type(shallow) is not int or type(deep) is not int or not 1 <= shallow < deep:
+            raise ValueError('Camera bias fitting requires two increasing, one-based decoder layers and calibration')
+        calibration_layers = (shallow, deep)
+        pruning_layer = shallow
     if reuse_raw_96 and (not raw_mmr or 96 not in keep_counts or expected_evaluation_ids is None):
         raise ValueError('Reusing raw_96 requires the raw MMR experiment, budget 96, and the historical cohort')
     if reuse_raw_96 and evaluation_subset_size is not None:
@@ -165,8 +201,8 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             raise ValueError('All sweep weights must be in [0, 1]')
     if attention_normalization not in ('none', 'minmax') or not 0 <= mmr_weight <= 1:
         raise ValueError('Use attention normalization none or minmax and an MMR weight in [0, 1]')
-    if not raw_mmr and (attention_normalization != 'none' or mmr_weight != WEIGHT):
-        raise ValueError('MMR normalization and weight overrides require the raw MMR experiment')
+    if not raw_mmr and camera_bias_layers is None and (attention_normalization != 'none' or mmr_weight != WEIGHT):
+        raise ValueError('MMR normalization and weight overrides require raw MMR or per-camera bias fitting')
     methods = RAW_METHODS if camera_mmr else RAW_METHODS[:2]
     matrix = None
     if raw_mmr:
@@ -179,6 +215,9 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
     else:
         calibration, evaluation, policy, distribution = select_rows(
             Path(prepared), calibration_size, evaluation_size, seed, evaluation_fraction=evaluation_fraction)
+        if camera_bias_layers is not None:
+            methods = ('mmr', PREDICTOR_METHOD) if predictor is not None else ('raw', 'corrected', 'mmr', 'raw_mmr')
+            matrix = [(method, keep) for keep in keep_counts for method in methods]
     if expected_evaluation_ids is not None and [row['sample_id'] for row in evaluation] != expected_evaluation_ids:
         raise ValueError('Evaluation questions differ from the historical comparison cohort')
     parent_size = len(evaluation)
@@ -211,6 +250,12 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
     numbered = list(enumerate(evaluation))
     calibration_shards = [calibration[rank::count] for rank in range(count)]
     evaluation_shards = [numbered[rank::count] for rank in range(count)]
+    recording_shards = [None] * count
+    if predictor is not None:
+        from .calibration_sweep import split_by_recording
+
+        recording_groups = [[calibration[i] for i in group] for group in split_by_recording(calibration)]
+        recording_shards = [[group[rank::count] for group in recording_groups] for rank in range(count)]
     processes = []
     prefill_start = perf_counter()
     temporary = TemporaryDirectory(prefix='posprune-frames-') if frames is not None else None
@@ -223,6 +268,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
         for rank, folder in enumerate(folders):
             _json_write(folder / 'job.json', dict(checkpoint=str(Path(checkpoint).resolve()), receipt=receipt,
                 features=features, matrix=matrix, mmr_weight=mmr_weight, pruning_layer=pruning_layer,
+                calibration_layers=calibration_layers, predictor=predictor, recording_groups=recording_shards[rank],
                 attention_normalization=attention_normalization,
                 camera_order=camera_order, rank=rank, calibration_batch=calibration_batch,
                 generation_batch=generation_batch, keep_counts=keep_counts,
@@ -237,7 +283,7 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
             _wait_for_files(processes, folders, [folder / 'features_ready.json' for folder in folders], 'feature extraction')
             feature_elapsed = perf_counter() - prefill_start
             _json_write(workers / 'features_ready.json', True)
-        if matrix is None:
+        if calibration_layers:
             print(f'Measuring calibration and held-out attention across {count} GPU worker(s).', flush=True)
         paths = [folder / 'prefill.json' for folder in folders]
         _wait_for_files(processes, folders, paths, 'prefill statistics')
@@ -255,6 +301,22 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                           variants=[dict(name=f'{method}_{keep}', method=method, keep=keep,
                               source='historical' if reuse_raw_96 and method == 'raw' and keep == 96 else 'current')
                               for keep in keep_counts for method in methods])
+        if camera_bias_layers is not None:
+            config.update(experiment='camera_posprune', shallow=pruning_layer, deep=calibration_layers[-1],
+                          pruning_layer_index=pruning_layer - 1, weight=mmr_weight,
+                          bias_fit='per_camera_cubic' if spline_smoothing is None else 'per_camera_smoothing_spline',
+                          attention_normalization=attention_normalization,
+                          variants=[dict(name=f'{method}_{keep}', method=method, keep=keep) for method, keep in matrix])
+            if spline_smoothing is not None:
+                config['spline_smoothing'] = spline_smoothing
+        if predictor is not None:
+            group_counts = [len(group) for group in recording_groups]
+            group_means = [_weighted_mean([item['recording_means'][i] for item in stats],
+                                          [len(groups[i]) for groups in recording_shards]) for i in range(2)]
+            spline_smoothing = _choose_spline_smoothing(group_means, group_counts, config['cameras'], config['per_view'])
+            config.update(experiment='spline_vs_predictor', bias_fit='per_camera_smoothing_spline',
+                          spline_smoothing=spline_smoothing, predictor_sha256=predictor['sha256'],
+                          spline_cv_group_ids=[[row['sample_id'] for row in group] for group in recording_groups])
         if mmr_sweep is not None:
             config.update(variants=matrix, weight=None, mmr_lambdas=list(mmr_sweep))
             if 'attention_mmr' in sweep_methods:
@@ -269,10 +331,14 @@ def run_parallel(checkpoint, cache, prepared, output, *, cache_fingerprint, came
                              for item, a, b in zip(stats, calibration_shards, evaluation_shards)]
         _json_write(output / 'config.json', config)
         generation_start = perf_counter()
-        if matrix is None:
-            observed = _weighted_mean([item['observed'] for item in stats], [len(shard) for shard in calibration_shards])
+        if calibration_layers:
+            observed = (_weighted_mean([item['observed'] for item in stats], [len(shard) for shard in calibration_shards])
+                        if predictor is None else _weighted_mean(group_means, group_counts))
             held_out = _weighted_mean([item['held_out'] for item in stats], [len(shard) for shard in evaluation_shards])
-            _json_write(output / 'bias_curve.json', _fit_curve(observed, held_out))
+            bias = (_fit_curve(observed, held_out) if camera_bias_layers is None else
+                    _fit_camera_curves(observed, held_out, config['cameras'], config['per_view'],
+                                       spline_smoothing=spline_smoothing))
+            _json_write(output / 'bias_curve.json', bias)
         else:
             _json_write(output / 'generation_ready.json', True)
         progress = [folder / 'progress.json' for folder in folders]
