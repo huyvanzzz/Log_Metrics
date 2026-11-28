@@ -5,7 +5,9 @@ from pathlib import Path
 from smolvlm_attention.sample_store import atomic_json
 from smolvlm_map_predictor import data as original
 from .config import METHOD
-
+import spacy
+import torch
+from smolvlm_predictor_io.compact import CompactCollator
 
 def read_receipt(path, *, include_targets=True):
     receipt = json.loads(Path(path).read_text(encoding='utf-8'))
@@ -45,7 +47,93 @@ class PredictorDataset(original.PredictorDataset):
         super().__init__(receipt, split)
 
 
-class PredictorCollator(original.PredictorCollator):
+GIFT_POS_TAGS = {'NOUN', 'PROPN', 'VERB', 'ADJ', 'ADV', 'NUM'}
+
+
+class _PosFilterMixin:
+    def _init_pos(self):
+        self._nlp = None
+        self._pos_cache = {}
+
+    def _get_nlp(self):
+        if self._nlp is None:
+            self._nlp = spacy.load('en_core_web_sm', disable=['ner', 'parser', 'lemmatizer'])
+        return self._nlp
+
+    def _pos_mask_for_row(self, ids_row, attn_row, q_mask_row):
+        q_indices = q_mask_row.nonzero(as_tuple=True)[0]
+        if len(q_indices) == 0:
+            last_col = attn_row.nonzero(as_tuple=True)[0][-1]
+            out = torch.zeros_like(q_mask_row, dtype=torch.bool)
+            out[last_col] = True
+            return out
+
+        tokenizer = self.processor.tokenizer
+        q_token_ids = ids_row[q_indices].tolist()
+        cache_key = tuple(q_token_ids)
+
+        if cache_key not in self._pos_cache:
+            q_text = tokenizer.decode(q_token_ids, skip_special_tokens=False)
+            doc = self._get_nlp()(q_text)
+            kept_spans = [(tok.idx, tok.idx + len(tok.text))
+                          for tok in doc if tok.pos_ in GIFT_POS_TAGS]
+
+            enc = tokenizer(q_text, add_special_tokens=False, return_offsets_mapping=True)
+            rel_indices = []
+            if kept_spans and 'offset_mapping' in enc and len(enc['input_ids']) == len(q_indices):
+                for tok_pos, (s, e) in enumerate(enc['offset_mapping']):
+                    if s < e and any(not (e <= ks or s >= ke) for ks, ke in kept_spans):
+                        rel_indices.append(tok_pos)
+            else:
+                kept_words = {tok.text.lower() for tok in doc if tok.pos_ in GIFT_POS_TAGS}
+                for tok_pos, tid in enumerate(q_token_ids):
+                    if tokenizer.decode([tid]).strip().lower() in kept_words:
+                        rel_indices.append(tok_pos)
+            self._pos_cache[cache_key] = rel_indices
+
+        pos_mask = torch.zeros_like(q_mask_row, dtype=torch.bool)
+        rel_indices = self._pos_cache[cache_key]
+        if rel_indices:
+            pos_mask[q_indices[rel_indices]] = True
+        else:
+            last_col = attn_row.nonzero(as_tuple=True)[0][-1]
+            pos_mask[last_col] = True
+        return pos_mask
+
+    def _apply_pos_mask(self, result):
+        ids = result['input_ids']
+        attn = result['attention_mask'].bool()
+        q_mask = result['question_mask'].bool()
+        result['question_mask'] = torch.stack([
+            self._pos_mask_for_row(ids[i], attn[i], q_mask[i])
+            for i in range(ids.shape[0])
+        ])
+        result.pop('question_columns', None)
+        result.pop('question_valid', None)
+        return result
+
+
+class PredictorCollator(_PosFilterMixin, original.PredictorCollator):
     def __init__(self, receipt, processor, *, max_new_tokens=0):
         read_receipt(receipt, include_targets=False)
         super().__init__(receipt, processor, max_new_tokens=max_new_tokens)
+        self._init_pos()
+
+    def __getstate__(self):
+        return {**super().__getstate__(), '_nlp': None}
+
+    def __call__(self, items):
+        return self._apply_pos_mask(super().__call__(items))
+
+
+class POSCompactCollator(_PosFilterMixin, CompactCollator):
+    def __init__(self, store, processor, *, max_new_tokens=0):
+        super().__init__(store, max_new_tokens=max_new_tokens)
+        self.processor = processor
+        self._init_pos()
+
+    def __getstate__(self):
+        return {**super().__getstate__(), '_nlp': None}
+
+    def __call__(self, items):
+        return self._apply_pos_mask(super().__call__(items))

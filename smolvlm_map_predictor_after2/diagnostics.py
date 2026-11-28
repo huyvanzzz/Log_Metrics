@@ -62,7 +62,7 @@ def diagnose(cfg, receipt, backbone_checkpoint, output, *, cpu=False, backbone=N
         def extract(batch):
             nonlocal prefix
             prefix = run_prefix(backbone, fuse_inputs(backbone, batch))
-            return predictor_inputs(prefix)
+            return predictor_inputs(prefix, batch)
         prefix = None
         startup_seconds = time.perf_counter() - diagnostic_started
         measured = measure_updates(iter(loader),predictor,optimizer,accelerator,extract,

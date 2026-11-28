@@ -1,0 +1,47 @@
+{
+    "version":  1,
+    "architecture":  {
+                         "hidden_dim":  128,
+                         "projection_dim":  64,
+                         "visual_tokens":  384
+                     },
+    "training":  {
+                     "precision":  "fp32",
+                     "batch_size":  32,
+                     "gradient_accumulation_steps":  1,
+                     "epochs":  10,
+                     "world_size":  2,
+                     "seed":  42,
+                     "learning_rate":  0.0001,
+                     "weight_decay":  0.05,
+                     "scheduler_gamma":  0.9,
+                     "max_grad_norm":  1.0,
+                     "num_workers":  2,
+                     "prefetch_factor":  1,
+                     "persistent_workers":  true,
+                     "pin_memory":  true,
+                     "multiprocessing_context":  "spawn",
+                     "progress_log_every_steps":  500
+                 },
+    "evaluation":  {
+                       "batch_size":  64,
+                       "max_new_tokens":  512,
+                       "keep_tokens":  32
+                   },
+    "inputs":  {
+                   "checkpoint_repo":  "huyvanzzz/smolvlm256M_base",
+                   "checkpoint_revision":  "f9d4e9a4d704078f9e7f39f061d13602cf251c78",
+                   "prepared_repo":  "huyvanzzz/prepared_data",
+                   "prepared_revision":  "d2a6914f681dbb9148c4ac11e6fa92452010506e",
+                   "cache_dataset":  "huyhuy12334/cache-smolvlm/versions/1",
+                   "cache_fingerprint":  "0632954bab4d7a8e5af5934f3476610a0547db8f3083495c1207c3da87b15585"
+               },
+    "output_dir": "/kaggle/working/smolvlm_map_predictor_after2_pos_tagging_index22_outputs",
+    "method": {
+        "prune_after_layer_index": 2,
+        "input_layer_index": 2,
+        "id": "map_after2_pos_tagging_direct_v1",
+        "teacher_layer_index": 22,
+        "query_policy": "pos_tagged_tokens"
+    }
+}

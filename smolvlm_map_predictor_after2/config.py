@@ -6,9 +6,9 @@ from smolvlm_map_predictor.config import SOURCE_TRAINING_COMMIT, recipe as origi
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / 'configs/smolvlm_map_predictor_after2_lastquery_index22.json'
-METHOD = dict(id='map_after2_lastprompt_direct_v1', input_layer_index=2,
-              query_policy='last_valid_native_generation_prompt_token',
-              prune_after_layer_index=2, teacher_layer_index=22)
+METHOD = dict(id='map_after2_pos_tagging_direct_v1', input_layer_index=2,
+            query_policy='pos_tagged_tokens',
+            prune_after_layer_index=2, teacher_layer_index=22)
 _INPUTS = dict(checkpoint_repo='huyvanzzz/smolvlm256M_base',
     checkpoint_revision='f9d4e9a4d704078f9e7f39f061d13602cf251c78',
     prepared_repo='huyvanzzz/prepared_data', prepared_revision='d2a6914f681dbb9148c4ac11e6fa92452010506e',

@@ -103,8 +103,8 @@ def _evaluation_dataset(receipt):
 
 def _evaluation_collator(receipt, processor, maximum):
     if read_receipt(receipt, include_targets=False).get('version') == 2:
-        from smolvlm_predictor_io.compact import CompactCollator
-        return CompactCollator(receipt, max_new_tokens=maximum)
+        from .data import POSCompactCollator
+        return POSCompactCollator(receipt, processor, max_new_tokens=maximum)
     return PredictorCollator(receipt, processor, max_new_tokens=maximum)
 
 

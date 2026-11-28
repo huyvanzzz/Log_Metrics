@@ -146,7 +146,7 @@ def train(cfg, receipt, backbone_checkpoint, output, *, resume=None, cpu=False,
         frozen_modules=['vision_model', 'connector', 'text_model', 'lm_head'], trainable_modules=['predictor'],
         feature_input_dtype='float32' if pool else 'float16', compute_dtype='float32', loss_type='teacher_to_predictor_kl',
         rng_restored=resume is not None, prefix_layer_indices=[0,1,2], input_boundary='complete_block_2_output',
-        query_policy='last_valid_native_generation_prompt_token', suffix_block_calls=0, tf32=False, autocast=False,
+        query_policy='pos_tagged_tokens', suffix_block_calls=0, tf32=False, autocast=False,
         gradient_accumulation_steps=train_cfg['gradient_accumulation_steps'], num_workers=train_cfg['num_workers'],
         prefetch_factor=train_cfg['prefetch_factor'])
     guards = forbid_backbone_forward(backbone, projected=pool is not None)

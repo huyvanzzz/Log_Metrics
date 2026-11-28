@@ -6,7 +6,7 @@ No final normalization or suffix layer is applied.
 """
 import torch
 from smolvlm_topk_deferred.generation import _mask
-from smolvlm_map_predictor.model import visual_features
+from smolvlm_map_predictor.model import visual_features, gather_questions
 
 
 @torch.no_grad()
@@ -68,13 +68,21 @@ def run_prefix(backbone, fused, cache=None):
         last_query_columns=columns,original_lengths=fused['original_lengths'],prefix_masks=masks,lengths=lengths)
 
 
-def predictor_inputs(prefix):
-    hidden=prefix['hidden']; image=prefix['image_positions']; query=prefix['last_query_columns'][:,None]
-    return dict(visual=hidden.gather(1,image[:,:,None].expand(-1,-1,hidden.shape[-1])),
-        last_query=hidden.gather(1,query[:,:,None].expand(-1,-1,hidden.shape[-1])),
-        visual_positions=prefix['pos'].gather(1,image),query_positions=prefix['pos'].gather(1,query))
+def predictor_inputs(prefix, batch):
+    hidden = prefix['hidden']
+    image = prefix['image_positions']
+    question, question_mask, question_positions = gather_questions(
+        hidden, prefix['pos'], batch
+    )
+    return dict(
+        visual=hidden.gather(1, image[:, :, None].expand(-1, -1, hidden.shape[-1])),
+        question=question,
+        question_mask=question_mask,
+        visual_positions=prefix['pos'].gather(1, image),
+        question_positions=question_positions,
+    )
 
 
 @torch.no_grad()
-def frozen_features(backbone,batch):
-    return predictor_inputs(run_prefix(backbone,fuse_inputs(backbone,batch)))
+def frozen_features(backbone, batch):
+    return predictor_inputs(run_prefix(backbone, fuse_inputs(backbone, batch)), batch)

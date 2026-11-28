@@ -17,8 +17,8 @@ from smolvlm_map_predictor.training import precision, move_batch, memory, close_
 
 from smolvlm_predictor_mass.runtime import read_predictor, prepare_test_store, make_predictor
 
-QUERY = dict(before='question_tokens_visual_softmax_then_masked_query_mean_v1',
-             after2='last_valid_native_generation_prompt_token')
+QUERY=dict(before='all_native_question_tokens_excluding_image_and_template',
+           after2='pos_tagged_tokens')
 
 def execution_identity():
     from smolvlm_map_predictor.runtime import versions
@@ -140,8 +140,14 @@ def _worker(run,rank,*,device='cuda:0',backbone=None):
         if path.exists(): _read_commit(path,identity,rank,index,scheduled,[dataset[i] for i in scheduled],keep)
         else: pending.append(index)
     lengths=dataset.prompt_lengths; stress=sorted(rows,key=lambda row:(-int(lengths[row]),row))[:size]
+    if run['config']['variant'] == 'after2':
+        from smolvlm_map_predictor_after2.data import POSCompactCollator
+        collator = POSCompactCollator(run['receipt'], backbone.processor,
+                                      max_new_tokens=run['config']['evaluation']['max_new_tokens'])
+    else:
+        collator = CompactCollator(run['receipt'], max_new_tokens=run['config']['evaluation']['max_new_tokens'])
     loader=DataLoader(dataset,batch_sampler=[stress]+[schedules[i] for i in pending],
-        collate_fn=CompactCollator(run['receipt'],max_new_tokens=run['config']['evaluation']['max_new_tokens']),
+        collate_fn=collator,
         num_workers=2,persistent_workers=True,pin_memory=True,prefetch_factor=1,multiprocessing_context='spawn',
         generator=torch.Generator().manual_seed(42))
     decoder=Decoder(backbone,predictor,variant=run['config']['variant'],keep_tokens=keep)

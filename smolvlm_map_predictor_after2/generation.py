@@ -72,7 +72,7 @@ class PredictorGreedyDecoder(DeferredGreedyDecoder):
             raise ValueError('generation requires an eval predictor')
         cache=None if reference else DynamicCache()
         prefix=run_prefix(self.model,fused,cache)
-        inputs=predictor_inputs(prefix)
+        inputs=predictor_inputs(prefix, batch)
         scores=self.predictor(**inputs)
         chosen=(topk_indices(scores,self.keep_tokens) if self.selection_fn is None else
                 self.selection_fn(scores,inputs['visual'],self.keep_tokens))
