@@ -28,3 +28,4 @@ smolvlm_probing_outputs/
 smolvlm_prompt_attention_outputs/
 smolvlm_topk_benchmark_outputs/
 smolvlm_combined_visual_attention_outputs/
+smolvlm_combined_topk_outputs/
